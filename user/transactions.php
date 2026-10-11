@@ -28,6 +28,8 @@ if ($typeFilter === 'add_funds') {
     $sql .= " AND type = 'refund'";
 } elseif ($typeFilter === 'bonuses') {
     $sql .= " AND type = 'bonus'";
+} elseif ($typeFilter === 'spin') {
+    $sql .= " AND (type IN ('spin_bet', 'spin_win') OR note LIKE 'Spin Wheel%')";
 }
 
 $sql .= " ORDER BY created_at DESC";
@@ -107,6 +109,7 @@ require_once __DIR__ . '/../includes/header.php';
         <!-- Filter Tabs -->
         <div class="flex items-center gap-2 overflow-x-auto py-4">
             <a href="/user/transactions.php?type=all" class="px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap <?= $typeFilter === 'all' ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20' : 'bg-slate-50 text-slate-600 hover:bg-slate-100' ?>">All Transactions</a>
+            <a href="/user/transactions.php?type=spin" class="px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap <?= $typeFilter === 'spin' ? 'bg-purple-600 text-white shadow-md shadow-purple-500/20' : 'bg-slate-50 text-slate-600 hover:bg-slate-100' ?>">🎡 Spin & Win</a>
             <a href="/user/transactions.php?type=add_funds" class="px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap <?= $typeFilter === 'add_funds' ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20' : 'bg-slate-50 text-slate-600 hover:bg-slate-100' ?>">Deposits (Add Funds)</a>
             <a href="/user/transactions.php?type=orders" class="px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap <?= $typeFilter === 'orders' ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20' : 'bg-slate-50 text-slate-600 hover:bg-slate-100' ?>">Order Charges</a>
             <a href="/user/transactions.php?type=bonuses" class="px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap <?= $typeFilter === 'bonuses' ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20' : 'bg-slate-50 text-slate-600 hover:bg-slate-100' ?>">Referral Rewards</a>
@@ -124,6 +127,17 @@ require_once __DIR__ . '/../includes/header.php';
             <div class="divide-y divide-slate-100 mt-2">
                 <?php foreach ($transactions as $txn): 
                     $isDeposit = ((float)$txn['amount'] > 0);
+                    $txnType = $txn['type'] ?? '';
+                    $txnNote = (string)($txn['note'] ?? '');
+                    if ($txnType === 'spin_bet' || stripos($txnNote, 'Spin Wheel Bet') !== false) {
+                        $displayTitle = 'Spin Wheel Bet';
+                    } elseif ($txnType === 'spin_win' || stripos($txnNote, 'Spin Wheel Reward') !== false) {
+                        $displayTitle = 'Spin Wheel Reward';
+                    } elseif ($isDeposit) {
+                        $displayTitle = 'Wallet Deposit';
+                    } else {
+                        $displayTitle = 'Order Charge';
+                    }
                 ?>
                     <div class="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/70 p-3 rounded-2xl transition-all">
                         <div class="flex items-center gap-3.5">
@@ -132,7 +146,7 @@ require_once __DIR__ . '/../includes/header.php';
                             </div>
                             <div>
                                 <h4 class="text-sm font-bold text-slate-900">
-                                    <?= $isDeposit ? 'Wallet Deposit' : 'Order Charge' ?>
+                                    <?= e($displayTitle) ?>
                                 </h4>
                                 <div class="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-0.5">
                                     <span class="font-semibold text-slate-700"><?= e($txn['note'] ?: $txn['gateway']) ?></span>
