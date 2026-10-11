@@ -86,6 +86,7 @@ $adminNavLinks = [
         }
     </script>
     <style>
+        [x-cloak] { display: none !important; }
         .font-script { font-family: 'Caveat', cursive; }
         .font-mono-nums { font-variant-numeric: tabular-nums; }
         .card-glow-blue { box-shadow: 0 20px 40px -12px rgba(37, 99, 235, 0.22); }

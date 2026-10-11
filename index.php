@@ -296,123 +296,6 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 
-    <?php if (!empty($landingFlashSales)): 
-        $activeSale = $landingFlashSales[0];
-    ?>
-    <!-- ================================================================= -->
-    <!-- FLASH SALE LANDING SHOWCASE BANNER -->
-    <!-- ================================================================= -->
-    <div class="mt-12 sm:mt-16 max-w-6xl mx-auto px-4" x-data="landingFlashSale(<?= htmlspecialchars(json_encode($activeSale), ENT_QUOTES, 'UTF-8') ?>)">
-        <div class="relative overflow-hidden rounded-3xl bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 text-white p-6 sm:p-8 shadow-2xl shadow-indigo-950/20">
-            <!-- Decorative Glow Elements -->
-            <div class="absolute -right-20 -top-20 w-80 h-80 bg-pink-500/20 rounded-full blur-3xl pointer-events-none"></div>
-            <div class="absolute -left-20 -bottom-20 w-80 h-80 bg-blue-400/20 rounded-full blur-3xl pointer-events-none"></div>
-
-            <div class="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-                <!-- Left Details -->
-                <div class="text-left max-w-2xl">
-                    <div class="flex flex-wrap items-center gap-2 mb-3">
-                        <span class="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full text-xs font-black uppercase tracking-wider bg-rose-500 text-white shadow-md shadow-rose-950/30">
-                            <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>
-                            <span>Limited Time Event</span>
-                        </span>
-                        <span class="px-3 py-1 rounded-full text-xs font-black bg-white/20 backdrop-blur-md text-white border border-white/30 shadow-xs">
-                            <?= e($activeSale['badge_text']) ?>
-                        </span>
-                        <?php if (!empty($activeSale['category_name'])): ?>
-                            <span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-white/10 text-indigo-100 border border-white/20">
-                                <?= e($activeSale['category_name']) ?>
-                            </span>
-                        <?php endif; ?>
-                    </div>
-
-                    <h2 class="text-2xl sm:text-3xl font-black text-white tracking-tight leading-tight">
-                        ⚡ <?= e($activeSale['title']) ?>
-                    </h2>
-                    <p class="text-xs sm:text-sm text-indigo-100/90 mt-2 leading-relaxed">
-                        <?= e($activeSale['subtitle'] ?: 'Boost your social presence today with massive limited-time savings across our highest rated services.') ?>
-                    </p>
-                </div>
-
-                <!-- Right Countdown & CTA -->
-                <div class="flex flex-col sm:flex-row lg:flex-col items-start lg:items-end gap-4 shrink-0">
-                    <div>
-                        <span class="text-[10px] font-black uppercase tracking-widest text-indigo-200 block mb-1 text-left lg:text-right">Hurry! Offer Ends In</span>
-                        <div class="flex items-center gap-1.5">
-                            <div class="flex flex-col items-center bg-black/40 backdrop-blur-md border border-white/20 text-white px-3 py-2 rounded-2xl min-w-[50px] shadow-inner">
-                                <span class="text-base sm:text-lg font-black font-mono leading-none" x-text="pad(hours)">00</span>
-                                <span class="text-[8px] font-extrabold uppercase text-indigo-200 tracking-wider mt-1">HRS</span>
-                            </div>
-                            <span class="text-white/60 font-black text-base">:</span>
-                            <div class="flex flex-col items-center bg-black/40 backdrop-blur-md border border-white/20 text-white px-3 py-2 rounded-2xl min-w-[50px] shadow-inner">
-                                <span class="text-base sm:text-lg font-black font-mono leading-none" x-text="pad(minutes)">00</span>
-                                <span class="text-[8px] font-extrabold uppercase text-indigo-200 tracking-wider mt-1">MIN</span>
-                            </div>
-                            <span class="text-white/60 font-black text-base">:</span>
-                            <div class="flex flex-col items-center bg-rose-600 border border-rose-400 text-white px-3 py-2 rounded-2xl min-w-[50px] shadow-md shadow-rose-950/40">
-                                <span class="text-base sm:text-lg font-black font-mono leading-none" x-text="pad(seconds)">00</span>
-                                <span class="text-[8px] font-bold uppercase text-rose-200 tracking-wider mt-1">SEC</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <a href="<?= $isLoggedIn ? '/user/services.php?sale_id=' . (int)$activeSale['id'] : '/login.php?redirect=' . urlencode('/user/services.php?sale_id=' . (int)$activeSale['id']) ?>" 
-                       class="px-6 py-3 rounded-2xl bg-white hover:bg-indigo-50 text-indigo-900 font-black text-xs sm:text-sm shadow-xl shadow-black/20 flex items-center gap-2 hover:scale-105 active:scale-95 transition-all">
-                        <span>View All Deals</span>
-                        <svg class="w-4 h-4 text-indigo-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
-                    </a>
-                </div>
-            </div>
-
-            <!-- Real Discounted Services Grid -->
-            <?php if (!empty($landingFlashServices)): ?>
-                <div class="mt-8 pt-6 border-t border-white/15">
-                    <span class="text-[11px] font-black uppercase tracking-wider text-indigo-200 block text-left mb-4">
-                        Featured Flash Deals (<?= count($landingFlashServices) ?> Services on Sale)
-                    </span>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 text-left">
-                        <?php foreach ($landingFlashServices as $fsvc): 
-                            $fDisc = get_service_flash_sale_discount((int)$fsvc['id'], (int)$fsvc['category_id'], (float)$fsvc['rate_per_1000'], [$activeSale]);
-                            $origRate = (float)$fsvc['rate_per_1000'];
-                            $saleRate = $fDisc ? $fDisc['sale_rate'] : $origRate;
-                            $discPercent = $fDisc ? $fDisc['discount_percent'] : 0;
-                            $targetOrderUrl = $isLoggedIn 
-                                ? '/user/new-order.php?service_id=' . (int)$fsvc['id'] 
-                                : '/login.php?redirect=' . urlencode('/user/new-order.php?service_id=' . (int)$fsvc['id']);
-                        ?>
-                            <div class="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 flex flex-col justify-between hover:bg-white/15 transition-all group">
-                                <div>
-                                    <div class="flex items-center justify-between gap-2 mb-2">
-                                        <span class="px-2 py-0.5 rounded-lg bg-white/20 text-[10px] font-extrabold uppercase tracking-wide text-white">
-                                            <?= e($fsvc['platform'] ?: 'Service') ?>
-                                        </span>
-                                        <span class="px-2 py-0.5 rounded-full bg-rose-500 text-[10px] font-black text-white shadow-xs">
-                                            -<?= $discPercent ?>% OFF
-                                        </span>
-                                    </div>
-                                    <h4 class="text-xs font-bold text-white line-clamp-2 group-hover:text-amber-200 transition-colors">
-                                        <?= e($fsvc['name']) ?>
-                                    </h4>
-                                </div>
-
-                                <div class="mt-4 pt-3 border-t border-white/10 flex items-center justify-between">
-                                    <div>
-                                        <span class="text-[10px] text-indigo-200/80 line-through block"><?= format_currency($origRate) ?></span>
-                                        <span class="text-sm font-black text-white"><?= format_currency($saleRate) ?> <span class="text-[9px] text-indigo-200 font-medium">/ 1K</span></span>
-                                    </div>
-                                    <a href="<?= $targetOrderUrl ?>" class="px-3 py-1.5 rounded-xl bg-white text-indigo-900 font-extrabold text-[11px] hover:bg-indigo-50 shadow-sm transition-all">
-                                        Order Now
-                                    </a>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                </div>
-            <?php endif; ?>
-        </div>
-    </div>
-    <?php endif; ?>
-
     <!-- ================================================================= -->
     <!-- 3D CAROUSEL SECTION (MATCHING REFERENCE IMAGE VISUAL SPECIFICATION) -->
     <!-- ================================================================= -->
@@ -543,8 +426,125 @@ require_once __DIR__ . '/includes/header.php';
         <?php endif; ?>
     </div>
 
+    <?php if (!empty($landingFlashSales)): 
+        $activeSale = $landingFlashSales[0];
+    ?>
+    <!-- ================================================================= -->
+    <!-- FLASH SALE LANDING SHOWCASE BANNER (AFTER CARDS SECTION)          -->
+    <!-- ================================================================= -->
+    <div class="mt-14 sm:mt-18 max-w-6xl mx-auto px-4" x-data="landingFlashSale(<?= htmlspecialchars(json_encode($activeSale), ENT_QUOTES, 'UTF-8') ?>)">
+        <div class="relative overflow-hidden rounded-3xl bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 text-white p-6 sm:p-8 shadow-2xl shadow-indigo-950/20">
+            <!-- Decorative Glow Elements -->
+            <div class="absolute -right-20 -top-20 w-80 h-80 bg-pink-500/20 rounded-full blur-3xl pointer-events-none"></div>
+            <div class="absolute -left-20 -bottom-20 w-80 h-80 bg-blue-400/20 rounded-full blur-3xl pointer-events-none"></div>
+
+            <div class="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                <!-- Left Details -->
+                <div class="text-left max-w-2xl">
+                    <div class="flex flex-wrap items-center gap-2 mb-3">
+                        <span class="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full text-xs font-black uppercase tracking-wider bg-rose-500 text-white shadow-md shadow-rose-950/30">
+                            <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+                            <span>Limited Time Event</span>
+                        </span>
+                        <span class="px-3 py-1 rounded-full text-xs font-black bg-white/20 backdrop-blur-md text-white border border-white/30 shadow-xs">
+                            <?= e($activeSale['badge_text']) ?>
+                        </span>
+                        <?php if (!empty($activeSale['category_name'])): ?>
+                            <span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-white/10 text-indigo-100 border border-white/20">
+                                <?= e($activeSale['category_name']) ?>
+                            </span>
+                        <?php endif; ?>
+                    </div>
+
+                    <h2 class="text-2xl sm:text-3xl font-black text-white tracking-tight leading-tight">
+                        ⚡ <?= e($activeSale['title']) ?>
+                    </h2>
+                    <p class="text-xs sm:text-sm text-indigo-100/90 mt-2 leading-relaxed">
+                        <?= e($activeSale['subtitle'] ?: 'Boost your social presence today with massive limited-time savings across our highest rated services.') ?>
+                    </p>
+                </div>
+
+                <!-- Right Countdown & CTA -->
+                <div class="flex flex-col sm:flex-row lg:flex-col items-start lg:items-end gap-4 shrink-0">
+                    <div>
+                        <span class="text-[10px] font-black uppercase tracking-widest text-indigo-200 block mb-1 text-left lg:text-right">Hurry! Offer Ends In</span>
+                        <div class="flex items-center gap-1.5">
+                            <div class="flex flex-col items-center bg-black/40 backdrop-blur-md border border-white/20 text-white px-3 py-2 rounded-2xl min-w-[50px] shadow-inner">
+                                <span class="text-base sm:text-lg font-black font-mono leading-none" x-text="pad(hours)">00</span>
+                                <span class="text-[8px] font-extrabold uppercase text-indigo-200 tracking-wider mt-1">HRS</span>
+                            </div>
+                            <span class="text-white/60 font-black text-base">:</span>
+                            <div class="flex flex-col items-center bg-black/40 backdrop-blur-md border border-white/20 text-white px-3 py-2 rounded-2xl min-w-[50px] shadow-inner">
+                                <span class="text-base sm:text-lg font-black font-mono leading-none" x-text="pad(minutes)">00</span>
+                                <span class="text-[8px] font-extrabold uppercase text-indigo-200 tracking-wider mt-1">MIN</span>
+                            </div>
+                            <span class="text-white/60 font-black text-base">:</span>
+                            <div class="flex flex-col items-center bg-rose-600 border border-rose-400 text-white px-3 py-2 rounded-2xl min-w-[50px] shadow-md shadow-rose-950/40">
+                                <span class="text-base sm:text-lg font-black font-mono leading-none" x-text="pad(seconds)">00</span>
+                                <span class="text-[8px] font-bold uppercase text-rose-200 tracking-wider mt-1">SEC</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <a href="<?= $isLoggedIn ? '/user/services.php?sale_id=' . (int)$activeSale['id'] : '/login.php?redirect=' . urlencode('/user/services.php?sale_id=' . (int)$activeSale['id']) ?>" 
+                       class="px-6 py-3 rounded-2xl bg-white hover:bg-indigo-50 text-indigo-900 font-black text-xs sm:text-sm shadow-xl shadow-black/20 flex items-center gap-2 hover:scale-105 active:scale-95 transition-all">
+                        <span>View All Deals</span>
+                        <svg class="w-4 h-4 text-indigo-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Real Discounted Services Grid -->
+            <?php if (!empty($landingFlashServices)): ?>
+                <div class="mt-8 pt-6 border-t border-white/15">
+                    <span class="text-[11px] font-black uppercase tracking-wider text-indigo-200 block text-left mb-4">
+                        Featured Flash Deals (<?= count($landingFlashServices) ?> Services on Sale)
+                    </span>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 text-left">
+                        <?php foreach ($landingFlashServices as $fsvc): 
+                            $fDisc = get_service_flash_sale_discount((int)$fsvc['id'], (int)$fsvc['category_id'], (float)$fsvc['rate_per_1000'], [$activeSale]);
+                            $origRate = (float)$fsvc['rate_per_1000'];
+                            $saleRate = $fDisc ? $fDisc['sale_rate'] : $origRate;
+                            $discPercent = $fDisc ? $fDisc['discount_percent'] : 0;
+                            $targetOrderUrl = $isLoggedIn 
+                                ? '/user/new-order.php?service_id=' . (int)$fsvc['id'] 
+                                : '/login.php?redirect=' . urlencode('/user/new-order.php?service_id=' . (int)$fsvc['id']);
+                        ?>
+                            <div class="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 flex flex-col justify-between hover:bg-white/15 transition-all group">
+                                <div>
+                                    <div class="flex items-center justify-between gap-2 mb-2">
+                                        <span class="px-2 py-0.5 rounded-lg bg-white/20 text-[10px] font-extrabold uppercase tracking-wide text-white">
+                                            <?= e($fsvc['platform'] ?: 'Service') ?>
+                                        </span>
+                                        <span class="px-2 py-0.5 rounded-full bg-rose-500 text-[10px] font-black text-white shadow-xs">
+                                            -<?= $discPercent ?>% OFF
+                                        </span>
+                                    </div>
+                                    <h4 class="text-xs font-bold text-white line-clamp-2 group-hover:text-amber-200 transition-colors">
+                                        <?= e($fsvc['name']) ?>
+                                    </h4>
+                                </div>
+
+                                <div class="mt-4 pt-3 border-t border-white/10 flex items-center justify-between">
+                                    <div>
+                                        <span class="text-[10px] text-indigo-200/80 line-through block"><?= format_currency($origRate) ?></span>
+                                        <span class="text-sm font-black text-white"><?= format_currency($saleRate) ?> <span class="text-[9px] text-indigo-200 font-medium">/ 1K</span></span>
+                                    </div>
+                                    <a href="<?= $targetOrderUrl ?>" class="px-3 py-1.5 rounded-xl bg-white text-indigo-900 font-extrabold text-[11px] hover:bg-indigo-50 shadow-sm transition-all">
+                                        Order Now
+                                    </a>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <!-- Supported Platforms Section (Preserved) -->
-    <div class="mt-24">
+    <div class="mt-20 sm:mt-24">
         <span class="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">Supported Platforms</span>
         <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900">All Major Social Media Platforms</h2>
         

@@ -452,13 +452,8 @@ require_once __DIR__ . '/../includes/header.php';
                             required 
                             class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-xs sm:text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-600 cursor-pointer max-w-full truncate transition-all">
                         <template x-for="cat in categories" :key="cat.id">
-                            <option :value="cat.id" x-text="cat.name + ' (' + cat.service_count + ')'"></option>
+                            <option :value="String(cat.id)" x-text="cat.name + ' (' + cat.service_count + ')'"></option>
                         </template>
-                        <?php foreach ($allCategories as $c): ?>
-                            <option value="<?= $c['id'] ?>" <?= ($preCategoryId === (int)$c['id']) ? 'selected' : '' ?>>
-                                <?= e($c['name']) ?> (<?= (int)($c['service_count'] ?? 0) ?>)
-                            </option>
-                        <?php endforeach; ?>
                     </select>
                 </div>
 
@@ -481,13 +476,8 @@ require_once __DIR__ . '/../includes/header.php';
                             <option value="">No active services in this category</option>
                         </template>
                         <template x-for="svc in currentServices" :key="svc.id">
-                            <option :value="svc.id" x-text="'#' + svc.id + ' • ' + svc.name + ' — ' + svc.rate_formatted + ' / 1K'"></option>
+                            <option :value="String(svc.id)" x-text="'#' + svc.id + ' • ' + svc.name + ' — ' + svc.rate_formatted + ' / 1K'"></option>
                         </template>
-                        <?php foreach ($servicesInPreCategory as $s): ?>
-                            <option value="<?= $s['id'] ?>" <?= ($preServiceId === (int)$s['id']) ? 'selected' : '' ?>>
-                                #<?= $s['id'] ?> • <?= e($s['name']) ?> — <?= format_currency($s['rate_per_1000']) ?> / 1K
-                            </option>
-                        <?php endforeach; ?>
                     </select>
                 </div>
 
@@ -699,20 +689,30 @@ require_once __DIR__ . '/../includes/header.php';
 
                 onFormSubmit(e) {
                     if (!this.selectedCategoryId) {
-                        alert('Please select a category.');
                         e.preventDefault();
+                        if (typeof Swal !== 'undefined') {
+                            Swal.fire({ icon: 'warning', title: 'Attention', text: 'Please select a category.' });
+                        }
                         return;
                     }
                     if (!this.selectedServiceId) {
-                        alert('Please select a service.');
                         e.preventDefault();
+                        if (typeof Swal !== 'undefined') {
+                            Swal.fire({ icon: 'warning', title: 'Attention', text: 'Please select a service.' });
+                        }
                         return;
                     }
                     if (this.currentService) {
                         const q = Number(this.quantity);
                         if (q < this.currentService.min || q > this.currentService.max) {
-                            alert('Quantity must be between ' + this.currentService.min_formatted + ' and ' + this.currentService.max_formatted);
                             e.preventDefault();
+                            if (typeof Swal !== 'undefined') {
+                                Swal.fire({ 
+                                    icon: 'warning', 
+                                    title: 'Invalid Quantity', 
+                                    text: 'Quantity must be between ' + this.currentService.min_formatted + ' and ' + this.currentService.max_formatted 
+                                });
+                            }
                             return;
                         }
                     }
