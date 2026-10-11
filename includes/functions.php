@@ -1202,4 +1202,411 @@ function increment_flash_sale_orders(int $saleId): void {
     }
 }
 
+// =========================================================================
+// COMMUNITY VOTING & POLL SYSTEM HELPERS
+// =========================================================================
+
+function ensure_voting_tables_exist(PDO $db): void {
+    static $checked = false;
+    if ($checked) return;
+
+    try {
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS `polls` (
+              `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+              `question` VARCHAR(255) NOT NULL,
+              `description` TEXT NULL,
+              `status` ENUM('draft', 'published', 'paused', 'closed', 'cancelled', 'archived') NOT NULL DEFAULT 'draft',
+              `results_visibility` ENUM('always', 'after_vote', 'after_close', 'hidden') NOT NULL DEFAULT 'after_vote',
+              `allow_change` TINYINT(1) NOT NULL DEFAULT 0,
+              `starts_at` DATETIME NULL,
+              `ends_at` DATETIME NULL,
+              `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              INDEX `idx_polls_status_dates` (`status`, `starts_at`, `ends_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            CREATE TABLE IF NOT EXISTS `poll_options` (
+              `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+              `poll_id` INT UNSIGNED NOT NULL,
+              `option_text` VARCHAR(255) NOT NULL,
+              `sort_order` INT NOT NULL DEFAULT 0,
+              `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              INDEX `idx_poll_options_poll` (`poll_id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            CREATE TABLE IF NOT EXISTS `poll_votes` (
+              `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+              `poll_id` INT UNSIGNED NOT NULL,
+              `option_id` INT UNSIGNED NOT NULL,
+              `user_id` INT UNSIGNED NOT NULL,
+              `ip_address` VARCHAR(45) NULL,
+              `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY `uk_poll_user` (`poll_id`, `user_id`),
+              INDEX `idx_poll_votes_poll` (`poll_id`),
+              INDEX `idx_poll_votes_option` (`option_id`),
+              INDEX `idx_poll_votes_user` (`user_id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            CREATE TABLE IF NOT EXISTS `user_poll_bubble_dismissals` (
+              `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+              `user_id` INT UNSIGNED NOT NULL,
+              `poll_id` INT UNSIGNED NOT NULL,
+              `dismissed_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE KEY `uk_user_poll_dismissal` (`user_id`, `poll_id`),
+              INDEX `idx_user_dismissal` (`user_id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ");
+
+        // Seed initial poll if no polls exist
+        $pollCount = (int)$db->query("SELECT COUNT(*) FROM polls")->fetchColumn();
+        if ($pollCount === 0) {
+            $db->exec("
+                INSERT INTO `polls` (`id`, `question`, `description`, `status`, `results_visibility`, `allow_change`, `starts_at`, `ends_at`) VALUES
+                (1, 'Which platform services should we prioritize next?', 'Help us choose the next major social platform to expand with ultra-fast delivery and lower prices.', 'published', 'after_vote', 1, DATE_SUB(NOW(), INTERVAL 1 HOUR), DATE_ADD(NOW(), INTERVAL 14 DAY));
+
+                INSERT INTO `poll_options` (`id`, `poll_id`, `option_text`, `sort_order`) VALUES
+                (1, 1, 'Instagram Threads & Broadcast Channels', 1),
+                (2, 1, 'YouTube 4K Watch Hours & Monetization Pack', 2),
+                (3, 1, 'Telegram Boosts & Premium Channel Members', 3),
+                (4, 1, 'TikTok Live Stream Viewers & Comments', 4);
+            ");
+        }
+
+        $checked = true;
+    } catch (\Throwable $e) {
+        error_log("ensure_voting_tables_exist error: " . $e->getMessage());
+    }
+}
+
+/**
+ * Fetch all polls visible to the given user (or admin) with live stats and user votes
+ */
+function get_polls_for_user(int $userId, bool $isAdmin = false): array {
+    try {
+        $db = Database::getConnection();
+        ensure_voting_tables_exist($db);
+
+        // For normal users, fetch published polls or closed polls (archived/draft are excluded)
+        if ($isAdmin) {
+            $sql = "SELECT * FROM polls ORDER BY id DESC";
+            $stmt = $db->query($sql);
+            $polls = $stmt->fetchAll() ?: [];
+        } else {
+            $sql = "
+                SELECT * FROM polls 
+                WHERE status IN ('published', 'closed')
+                  AND (starts_at IS NULL OR starts_at <= NOW())
+                ORDER BY 
+                  CASE WHEN status = 'published' AND (ends_at IS NULL OR ends_at >= NOW()) THEN 0 ELSE 1 END ASC,
+                  id DESC
+            ";
+            $stmt = $db->query($sql);
+            $polls = $stmt->fetchAll() ?: [];
+        }
+
+        if (empty($polls)) {
+            return [];
+        }
+
+        $now = time();
+        $pollIds = array_column($polls, 'id');
+        $placeholders = implode(',', array_fill(0, count($pollIds), '?'));
+
+        // Load all options for these polls
+        $optStmt = $db->prepare("SELECT * FROM poll_options WHERE poll_id IN ({$placeholders}) ORDER BY sort_order ASC, id ASC");
+        $optStmt->execute($pollIds);
+        $allOptions = $optStmt->fetchAll() ?: [];
+
+        $optionsByPoll = [];
+        foreach ($allOptions as $opt) {
+            $optionsByPoll[(int)$opt['poll_id']][] = $opt;
+        }
+
+        // Load total votes per option
+        $voteCountsStmt = $db->prepare("SELECT option_id, COUNT(*) AS vote_count FROM poll_votes WHERE poll_id IN ({$placeholders}) GROUP BY option_id");
+        $voteCountsStmt->execute($pollIds);
+        $voteCounts = $voteCountsStmt->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
+
+        // Load user's vote for these polls
+        $userVotes = [];
+        if ($userId > 0) {
+            $userVoteStmt = $db->prepare("SELECT poll_id, option_id, created_at, updated_at FROM poll_votes WHERE user_id = ? AND poll_id IN ({$placeholders})");
+            $userVoteStmt->execute(array_merge([$userId], $pollIds));
+            while ($row = $userVoteStmt->fetch()) {
+                $userVotes[(int)$row['poll_id']] = [
+                    'option_id' => (int)$row['option_id'],
+                    'voted_at' => (string)$row['created_at'],
+                    'updated_at' => (string)$row['updated_at']
+                ];
+            }
+        }
+
+        // Process each poll with calculated metrics
+        foreach ($polls as &$poll) {
+            $pid = (int)$poll['id'];
+            $poll['id'] = $pid;
+            $opts = $optionsByPoll[$pid] ?? [];
+
+            $totalVotes = 0;
+            foreach ($opts as &$o) {
+                $oid = (int)$o['id'];
+                $o['id'] = $oid;
+                $cnt = (int)($voteCounts[$oid] ?? 0);
+                $o['vote_count'] = $cnt;
+                $totalVotes += $cnt;
+            }
+            unset($o);
+
+            // Compute percentages
+            foreach ($opts as &$o) {
+                $o['percentage'] = $totalVotes > 0 ? round(($o['vote_count'] / $totalVotes) * 100, 1) : 0.0;
+            }
+            unset($o);
+
+            $poll['options'] = $opts;
+            $poll['total_votes'] = $totalVotes;
+
+            // Schedule & Status calculation
+            $hasStarted = empty($poll['starts_at']) || strtotime((string)$poll['starts_at']) <= $now;
+            $hasEnded = !empty($poll['ends_at']) && strtotime((string)$poll['ends_at']) < $now;
+            
+            $isEffectivelyOpen = ($poll['status'] === 'published') && $hasStarted && !$hasEnded;
+            $poll['is_open'] = $isEffectivelyOpen;
+
+            // Remaining time
+            if (!empty($poll['ends_at'])) {
+                $endTs = strtotime((string)$poll['ends_at']);
+                $diff = max(0, $endTs - $now);
+                $poll['remaining_seconds'] = $diff;
+                $poll['days_left'] = floor($diff / 86400);
+                $poll['hours_left'] = floor(($diff % 86400) / 3600);
+                $poll['minutes_left'] = floor(($diff % 3600) / 60);
+                $poll['is_closing_soon'] = ($diff > 0 && $diff <= 86400 * 2); // Within 48 hours
+            } else {
+                $poll['remaining_seconds'] = null;
+                $poll['days_left'] = null;
+                $poll['is_closing_soon'] = false;
+            }
+
+            // User vote state
+            $uVote = $userVotes[$pid] ?? null;
+            $poll['user_voted'] = ($uVote !== null);
+            $poll['user_voted_option_id'] = $uVote ? (int)$uVote['option_id'] : null;
+            $poll['user_voted_at'] = $uVote ? (string)$uVote['voted_at'] : null;
+
+            // Can user vote?
+            $poll['can_vote'] = $isEffectivelyOpen && (!$poll['user_voted'] || (bool)$poll['allow_change']);
+
+            // Should results be displayed to user?
+            if ($isAdmin) {
+                $poll['show_results'] = true;
+            } else {
+                switch ($poll['results_visibility']) {
+                    case 'always':
+                        $poll['show_results'] = true;
+                        break;
+                    case 'after_vote':
+                        $poll['show_results'] = $poll['user_voted'];
+                        break;
+                    case 'after_close':
+                        $poll['show_results'] = !$isEffectivelyOpen;
+                        break;
+                    case 'hidden':
+                    default:
+                        $poll['show_results'] = false;
+                        break;
+                }
+            }
+        }
+        unset($poll);
+
+        return $polls;
+    } catch (\Throwable $e) {
+        error_log("get_polls_for_user error: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Returns active published poll data specifically for the User Dashboard Floating Bubble
+ * Returns null if no eligible polls exist or if user already dismissed the active poll.
+ */
+function get_floating_voting_bubble_data(int $userId): ?array {
+    if ($userId <= 0) return null;
+
+    try {
+        $db = Database::getConnection();
+        ensure_voting_tables_exist($db);
+
+        // Check if feature is globally disabled
+        if (get_setting('voting_system_enabled', '1') === '0') {
+            return null;
+        }
+
+        // Get user dismissed poll IDs from database & session
+        $dismissedPollIds = $_SESSION['dismissed_poll_bubbles'] ?? [];
+        $stmtD = $db->prepare("SELECT poll_id FROM user_poll_bubble_dismissals WHERE user_id = :uid");
+        $stmtD->execute(['uid' => $userId]);
+        $dbDismissed = $stmtD->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        $allDismissed = array_unique(array_merge($dismissedPollIds, array_map('intval', $dbDismissed)));
+
+        // Find active open published polls
+        $now = date('Y-m-d H:i:s');
+        $stmt = $db->prepare("
+            SELECT p.* 
+            FROM polls p
+            WHERE p.status = 'published'
+              AND (p.starts_at IS NULL OR p.starts_at <= :now1)
+              AND (p.ends_at IS NULL OR p.ends_at >= :now2)
+            ORDER BY p.id DESC
+        ");
+        $stmt->execute(['now1' => $now, 'now2' => $now]);
+        $activePolls = $stmt->fetchAll() ?: [];
+
+        if (empty($activePolls)) {
+            return null;
+        }
+
+        // Check user votes for active polls
+        $pollIds = array_column($activePolls, 'id');
+        $placeholders = implode(',', array_fill(0, count($pollIds), '?'));
+        $voteStmt = $db->prepare("SELECT poll_id, option_id FROM poll_votes WHERE user_id = ? AND poll_id IN ({$placeholders})");
+        $voteStmt->execute(array_merge([$userId], $pollIds));
+        $userVotedMap = $voteStmt->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
+
+        // Pick the best candidate poll:
+        // Prioritize: 1) Active poll user hasn't voted in yet and hasn't dismissed
+        //             2) Active poll user hasn't dismissed
+        $selectedPoll = null;
+        foreach ($activePolls as $p) {
+            $pid = (int)$p['id'];
+            if (in_array($pid, $allDismissed, true)) {
+                continue; // Dismissed by user
+            }
+            if (!isset($userVotedMap[$pid])) {
+                $selectedPoll = $p;
+                break; // Highest priority: unvoted & undismissed
+            }
+        }
+
+        // If all unvoted were dismissed or voted, see if there is an undismissed poll
+        if (!$selectedPoll) {
+            foreach ($activePolls as $p) {
+                $pid = (int)$p['id'];
+                if (!in_array($pid, $allDismissed, true) && (bool)$p['allow_change']) {
+                    $selectedPoll = $p;
+                    break;
+                }
+            }
+        }
+
+        if (!$selectedPoll) {
+            return null;
+        }
+
+        $pid = (int)$selectedPoll['id'];
+        $hasVoted = isset($userVotedMap[$pid]);
+
+        return [
+            'poll_id' => $pid,
+            'question' => (string)$selectedPoll['question'],
+            'description' => (string)($selectedPoll['description'] ?? ''),
+            'has_voted' => $hasVoted,
+            'allow_change' => (bool)$selectedPoll['allow_change'],
+            'ends_at' => $selectedPoll['ends_at'] ? (string)$selectedPoll['ends_at'] : null
+        ];
+    } catch (\Throwable $e) {
+        error_log("get_floating_voting_bubble_data error: " . $e->getMessage());
+        return null;
+    }
+}
+
+/**
+ * Cast a vote in a poll with atomic database transaction & constraint safety
+ */
+function cast_poll_vote(PDO $db, int $pollId, int $optionId, int $userId, ?string $ipAddress = null): array {
+    ensure_voting_tables_exist($db);
+
+    // 1. Authoritative check on poll
+    $now = date('Y-m-d H:i:s');
+    $pollStmt = $db->prepare("
+        SELECT * FROM polls 
+        WHERE id = :id 
+          AND status = 'published'
+          AND (starts_at IS NULL OR starts_at <= :now1)
+          AND (ends_at IS NULL OR ends_at >= :now2)
+        LIMIT 1
+    ");
+    $pollStmt->execute(['id' => $pollId, 'now1' => $now, 'now2' => $now]);
+    $poll = $pollStmt->fetch();
+
+    if (!$poll) {
+        throw new Exception("This poll is closed, inactive, or not scheduled for voting right now.");
+    }
+
+    // 2. Validate option belongs to this poll
+    $optStmt = $db->prepare("SELECT id, option_text FROM poll_options WHERE id = :oid AND poll_id = :pid LIMIT 1");
+    $optStmt->execute(['oid' => $optionId, 'pid' => $pollId]);
+    $option = $optStmt->fetch();
+
+    if (!$option) {
+        throw new Exception("Selected voting option is invalid for this poll.");
+    }
+
+    // 3. Check existing vote
+    $existStmt = $db->prepare("SELECT id, option_id FROM poll_votes WHERE poll_id = :pid AND user_id = :uid LIMIT 1");
+    $existStmt->execute(['pid' => $pollId, 'uid' => $userId]);
+    $existingVote = $existStmt->fetch();
+
+    $db->beginTransaction();
+    try {
+        if ($existingVote) {
+            if (!(bool)$poll['allow_change']) {
+                throw new Exception("You have already voted in this poll and changing your vote is disabled.");
+            }
+
+            // Update existing vote
+            $upd = $db->prepare("
+                UPDATE poll_votes 
+                SET option_id = :oid, ip_address = :ip, updated_at = NOW() 
+                WHERE id = :vid
+            ");
+            $upd->execute([
+                'oid' => $optionId,
+                'ip' => $ipAddress,
+                'vid' => $existingVote['id']
+            ]);
+            $isChange = true;
+        } else {
+            // Insert new vote
+            $ins = $db->prepare("
+                INSERT INTO poll_votes (poll_id, option_id, user_id, ip_address) 
+                VALUES (:pid, :oid, :uid, :ip)
+            ");
+            $ins->execute([
+                'pid' => $pollId,
+                'oid' => $optionId,
+                'uid' => $userId,
+                'ip' => $ipAddress
+            ]);
+            $isChange = false;
+        }
+
+        $db->commit();
+
+        return [
+            'success' => true,
+            'is_change' => $isChange,
+            'poll_id' => $pollId,
+            'option_id' => $optionId,
+            'option_text' => $option['option_text']
+        ];
+    } catch (\Throwable $e) {
+        $db->rollBack();
+        throw $e;
+    }
+}
+
 

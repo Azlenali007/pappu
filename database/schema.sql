@@ -7,6 +7,10 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 DROP TABLE IF EXISTS `update_audit_logs`;
 DROP TABLE IF EXISTS `migrations`;
+DROP TABLE IF EXISTS `user_poll_bubble_dismissals`;
+DROP TABLE IF EXISTS `poll_votes`;
+DROP TABLE IF EXISTS `poll_options`;
+DROP TABLE IF EXISTS `polls`;
 DROP TABLE IF EXISTS `user_notification_reads`;
 DROP TABLE IF EXISTS `user_announcement_dismissals`;
 DROP TABLE IF EXISTS `announcements`;
@@ -453,5 +457,65 @@ INSERT INTO `announcements` (`id`, `title`, `type`, `badge_text`, `message`, `bt
 -- Default Flash Sales
 INSERT INTO `flash_sales` (`id`, `title`, `subtitle`, `badge_text`, `discount_type`, `discount_value`, `scope_type`, `category_id`, `service_ids`, `starts_at`, `ends_at`, `status`, `max_orders`, `orders_count`, `banner_bg`) VALUES
 (1, 'Mega Weekend Flash Sale', 'Grab instant viral boosts on top Instagram & social growth services before time runs out!', '⚡ 30% OFF', 'percentage', 30.0000, 'category', 1, NULL, DATE_SUB(NOW(), INTERVAL 1 HOUR), DATE_ADD(NOW(), INTERVAL 3 DAY), 'active', 500, 14, 'from-blue-600 via-indigo-600 to-purple-600');
+
+-- 15. POLLS & USER VOTING SYSTEM
+CREATE TABLE IF NOT EXISTS `polls` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `question` VARCHAR(255) NOT NULL,
+  `description` TEXT NULL,
+  `status` ENUM('draft', 'published', 'paused', 'closed', 'cancelled', 'archived') NOT NULL DEFAULT 'draft',
+  `results_visibility` ENUM('always', 'after_vote', 'after_close', 'hidden') NOT NULL DEFAULT 'after_vote',
+  `allow_change` TINYINT(1) NOT NULL DEFAULT 0,
+  `starts_at` DATETIME NULL,
+  `ends_at` DATETIME NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX `idx_polls_status_dates` (`status`, `starts_at`, `ends_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `poll_options` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `poll_id` INT UNSIGNED NOT NULL,
+  `option_text` VARCHAR(255) NOT NULL,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX `idx_poll_options_poll` (`poll_id`),
+  CONSTRAINT `fk_poll_options_poll` FOREIGN KEY (`poll_id`) REFERENCES `polls` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `poll_votes` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `poll_id` INT UNSIGNED NOT NULL,
+  `option_id` INT UNSIGNED NOT NULL,
+  `user_id` INT UNSIGNED NOT NULL,
+  `ip_address` VARCHAR(45) NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_poll_user` (`poll_id`, `user_id`),
+  INDEX `idx_poll_votes_poll` (`poll_id`),
+  INDEX `idx_poll_votes_option` (`option_id`),
+  INDEX `idx_poll_votes_user` (`user_id`),
+  CONSTRAINT `fk_poll_votes_poll` FOREIGN KEY (`poll_id`) REFERENCES `polls` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_poll_votes_option` FOREIGN KEY (`option_id`) REFERENCES `poll_options` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `user_poll_bubble_dismissals` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT UNSIGNED NOT NULL,
+  `poll_id` INT UNSIGNED NOT NULL,
+  `dismissed_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_user_poll_dismissal` (`user_id`, `poll_id`),
+  INDEX `idx_user_dismissal` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Default Community Poll
+INSERT INTO `polls` (`id`, `question`, `description`, `status`, `results_visibility`, `allow_change`, `starts_at`, `ends_at`) VALUES
+(1, 'Which platform services should we prioritize next?', 'Help us choose the next major social platform to expand with ultra-fast delivery and lower prices.', 'published', 'after_vote', 1, DATE_SUB(NOW(), INTERVAL 1 HOUR), DATE_ADD(NOW(), INTERVAL 14 DAY));
+
+INSERT INTO `poll_options` (`id`, `poll_id`, `option_text`, `sort_order`) VALUES
+(1, 1, 'Instagram Threads & Broadcast Channels', 1),
+(2, 1, 'YouTube 4K Watch Hours & Monetization Pack', 2),
+(3, 1, 'Telegram Boosts & Premium Channel Members', 3),
+(4, 1, 'TikTok Live Stream Viewers & Comments', 4);
 
 
