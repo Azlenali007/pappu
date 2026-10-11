@@ -60,7 +60,8 @@ class SpinWheelEngine {
     }
 
     /**
-     * Ensures database tables exist (Runs automatically once if tables are missing)
+     * Ensures all database tables, columns, indexes, settings, and enum values exist.
+     * Checks each table independently rather than assuming all exist if one does.
      */
     public static function ensureTablesExist(): void {
         static $checked = false;
@@ -68,28 +69,252 @@ class SpinWheelEngine {
 
         try {
             $db = Database::getConnection();
-            $check = $db->query("SHOW TABLES LIKE 'spin_wheel_bets'");
-            if (!$check->fetch()) {
-                $migFile = APP_ROOT . '/database/migrations/005_spin_wheel_system.sql';
-                if (file_exists($migFile)) {
-                    $sql = file_get_contents($migFile);
-                    $statements = split_sql_statements($sql);
-                    foreach ($statements as $stmt) {
-                        if (trim($stmt) !== '') {
-                            try {
-                                $db->exec($stmt);
-                            } catch (\Throwable $se) {
-                                // Ignore benign "already exists" or duplicate column errors
-                                error_log("SpinWheelEngine migration notice: " . $se->getMessage());
-                            }
-                        }
+
+            // 1. Table: spin_wheel_bets
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS `spin_wheel_bets` (
+                    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `bet_amount` DECIMAL(12, 4) NOT NULL,
+                    `is_enabled` TINYINT(1) NOT NULL DEFAULT 1,
+                    `display_order` INT NOT NULL DEFAULT 0,
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY `uk_spin_bet_amount` (`bet_amount`),
+                    INDEX `idx_spin_bet_status` (`is_enabled`, `display_order`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ");
+
+            // 2. Table: spin_wheel_outcomes
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS `spin_wheel_outcomes` (
+                    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `bet_id` INT UNSIGNED NOT NULL,
+                    `reward_type` ENUM('jackpot', 'reward', 'money_back', 'no_reward') NOT NULL DEFAULT 'reward',
+                    `label` VARCHAR(80) NOT NULL,
+                    `reward_amount` DECIMAL(12, 4) NOT NULL DEFAULT 0.0000,
+                    `probability` DECIMAL(6, 3) NOT NULL DEFAULT 0.000,
+                    `icon_key` VARCHAR(40) NOT NULL DEFAULT 'trophy',
+                    `color_bg` VARCHAR(30) NOT NULL DEFAULT '#3b82f6',
+                    `color_text` VARCHAR(30) NOT NULL DEFAULT '#ffffff',
+                    `is_enabled` TINYINT(1) NOT NULL DEFAULT 1,
+                    `display_order` INT NOT NULL DEFAULT 0,
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX `idx_outcome_bet_order` (`bet_id`, `display_order`),
+                    INDEX `idx_outcome_enabled` (`is_enabled`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ");
+
+            // 3. Table: spin_wheel_config_versions
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS `spin_wheel_config_versions` (
+                    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `bet_id` INT UNSIGNED NOT NULL,
+                    `version_hash` VARCHAR(64) NOT NULL,
+                    `outcomes_snapshot` JSON NOT NULL,
+                    `total_probability` DECIMAL(6, 3) NOT NULL DEFAULT 100.000,
+                    `created_by` INT UNSIGNED NULL,
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX `idx_spin_cfg_bet` (`bet_id`),
+                    INDEX `idx_spin_cfg_hash` (`version_hash`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ");
+
+            // 4. Table: spin_spins
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS `spin_spins` (
+                    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `uuid` VARCHAR(64) NOT NULL UNIQUE,
+                    `user_id` INT UNSIGNED NOT NULL,
+                    `bet_id` INT UNSIGNED NOT NULL,
+                    `bet_amount` DECIMAL(12, 4) NOT NULL,
+                    `outcome_id` INT UNSIGNED NULL,
+                    `reward_type` ENUM('jackpot', 'reward', 'money_back', 'no_reward') NOT NULL,
+                    `outcome_label` VARCHAR(80) NOT NULL,
+                    `reward_amount` DECIMAL(12, 4) NOT NULL DEFAULT 0.0000,
+                    `segment_index` INT UNSIGNED NOT NULL DEFAULT 0,
+                    `final_angle` DECIMAL(8, 2) NOT NULL DEFAULT 0.00,
+                    `config_version_id` INT UNSIGNED NULL,
+                    `bet_transaction_id` INT UNSIGNED NULL,
+                    `reward_transaction_id` INT UNSIGNED NULL,
+                    `status` ENUM('pending', 'completed', 'failed') NOT NULL DEFAULT 'completed',
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX `idx_spins_user_created` (`user_id`, `created_at`),
+                    INDEX `idx_spins_reward_status` (`reward_type`, `status`, `created_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ");
+
+            // 5. Table: spin_wheel_audit_logs
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS `spin_wheel_audit_logs` (
+                    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `admin_id` INT UNSIGNED NULL,
+                    `action` VARCHAR(60) NOT NULL,
+                    `details` TEXT NULL,
+                    `ip_address` VARCHAR(45) NULL,
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX `idx_spin_audit_admin` (`admin_id`, `created_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ");
+
+            // 6. Ensure `transactions.type` column supports 'spin_bet' and 'spin_win'
+            try {
+                $checkTypeStmt = $db->query("SHOW COLUMNS FROM `transactions` LIKE 'type'");
+                $typeCol = $checkTypeStmt->fetch();
+                if ($typeCol && !empty($typeCol['Type'])) {
+                    if (stripos($typeCol['Type'], "'spin_bet'") === false || stripos($typeCol['Type'], "'spin_win'") === false) {
+                        $db->exec("
+                            ALTER TABLE `transactions`
+                            MODIFY COLUMN `type` ENUM('deposit', 'order', 'refund', 'bonus', 'admin_adjustment', 'spin_bet', 'spin_win') NOT NULL
+                        ");
                     }
                 }
+            } catch (\Throwable $te) {
+                error_log("SpinWheelEngine: Note on transactions.type column inspection: " . $te->getMessage());
             }
+
+            // 7. Ensure `spin_spins` column integrity (add missing columns if table pre-existed)
+            try {
+                $colsStmt = $db->query("SHOW COLUMNS FROM `spin_spins`");
+                $existingCols = array_column($colsStmt->fetchAll() ?: [], 'Field');
+                if (!in_array('config_version_id', $existingCols, true)) {
+                    $db->exec("ALTER TABLE `spin_spins` ADD COLUMN `config_version_id` INT UNSIGNED NULL AFTER `final_angle`");
+                }
+                if (!in_array('bet_transaction_id', $existingCols, true)) {
+                    $db->exec("ALTER TABLE `spin_spins` ADD COLUMN `bet_transaction_id` INT UNSIGNED NULL AFTER `config_version_id`");
+                }
+                if (!in_array('reward_transaction_id', $existingCols, true)) {
+                    $db->exec("ALTER TABLE `spin_spins` ADD COLUMN `reward_transaction_id` INT UNSIGNED NULL AFTER `bet_transaction_id`");
+                }
+            } catch (\Throwable $ce) {
+                error_log("SpinWheelEngine: Note on spin_spins column check: " . $ce->getMessage());
+            }
+
+            // 8. Seed Default Settings if missing
+            try {
+                $db->exec("
+                    INSERT INTO `settings` (`key`, `value`)
+                    VALUES 
+                      ('spin_wheel_enabled', '1'),
+                      ('spin_wheel_max_reward_limit', '1000.0000'),
+                      ('spin_wheel_cooldown_seconds', '2')
+                    ON DUPLICATE KEY UPDATE `key` = `key`
+                ");
+            } catch (\Throwable $se) {
+                error_log("SpinWheelEngine: Note on settings seeding: " . $se->getMessage());
+            }
+
+            // 9. Seed Default Bets if empty
+            $betCountStmt = $db->query("SELECT COUNT(*) FROM `spin_wheel_bets`");
+            $betCount = (int)$betCountStmt->fetchColumn();
+            if ($betCount === 0) {
+                $db->exec("
+                    INSERT INTO `spin_wheel_bets` (`id`, `bet_amount`, `is_enabled`, `display_order`)
+                    VALUES 
+                      (1, 1.0000, 1, 1),
+                      (2, 5.0000, 1, 2)
+                    ON DUPLICATE KEY UPDATE `is_enabled` = 1
+                ");
+            }
+
+            // 10. Seed Default Outcomes if empty for active bets
+            self::seedDefaultOutcomesIfEmpty($db);
+
         } catch (\Throwable $e) {
             error_log("SpinWheelEngine::ensureTablesExist error: " . $e->getMessage());
         }
         $checked = true;
+    }
+
+    /**
+     * Seeds default 8 balanced outcomes for bet 1 and bet 2 totaling exactly 100.000%
+     */
+    private static function seedDefaultOutcomesIfEmpty(PDO $db): void {
+        try {
+            // Check outcomes for Bet 1 (₹1)
+            $stmt1 = $db->prepare("SELECT COUNT(*) FROM `spin_wheel_outcomes` WHERE `bet_id` = 1");
+            $stmt1->execute();
+            if ((int)$stmt1->fetchColumn() === 0) {
+                $db->exec("
+                    INSERT INTO `spin_wheel_outcomes` (`id`, `bet_id`, `reward_type`, `label`, `reward_amount`, `probability`, `icon_key`, `color_bg`, `color_text`, `is_enabled`, `display_order`)
+                    VALUES
+                      (1, 1, 'jackpot', '₹30 JACKPOT', 30.0000, 0.500, 'trophy', '#7c3aed', '#ffffff', 1, 0),
+                      (2, 1, 'no_reward', 'TRY AGAIN', 0.0000, 35.000, 'cross', '#1e293b', '#94a3b8', 1, 1),
+                      (3, 1, 'reward', '₹2 Reward', 2.0000, 15.000, 'coin', '#2563eb', '#ffffff', 1, 2),
+                      (4, 1, 'money_back', 'MONEY BACK', 1.0000, 25.000, 'refresh', '#059669', '#ffffff', 1, 3),
+                      (5, 1, 'reward', '₹5 Reward', 5.0000, 4.500, 'gift', '#d97706', '#ffffff', 1, 4),
+                      (6, 1, 'no_reward', 'BETTER LUCK', 0.0000, 15.000, 'cross', '#334155', '#94a3b8', 1, 5),
+                      (7, 1, 'reward', '₹10 Reward', 10.0000, 2.000, 'sparkles', '#4f46e5', '#ffffff', 1, 6),
+                      (8, 1, 'money_back', '₹1 Return', 1.0000, 3.000, 'refresh', '#0d9488', '#ffffff', 1, 7)
+                    ON DUPLICATE KEY UPDATE `is_enabled` = 1
+                ");
+            }
+
+            // Check outcomes for Bet 2 (₹5)
+            $stmt2 = $db->prepare("SELECT COUNT(*) FROM `spin_wheel_outcomes` WHERE `bet_id` = 2");
+            $stmt2->execute();
+            if ((int)$stmt2->fetchColumn() === 0) {
+                $db->exec("
+                    INSERT INTO `spin_wheel_outcomes` (`id`, `bet_id`, `reward_type`, `label`, `reward_amount`, `probability`, `icon_key`, `color_bg`, `color_text`, `is_enabled`, `display_order`)
+                    VALUES
+                      (9, 2, 'jackpot', '₹80 JACKPOT', 80.0000, 0.500, 'trophy', '#7c3aed', '#ffffff', 1, 0),
+                      (10, 2, 'no_reward', 'TRY AGAIN', 0.0000, 30.000, 'cross', '#1e293b', '#94a3b8', 1, 1),
+                      (11, 2, 'reward', '₹10 Reward', 10.0000, 15.000, 'coin', '#2563eb', '#ffffff', 1, 2),
+                      (12, 2, 'money_back', 'MONEY BACK', 5.0000, 25.000, 'refresh', '#059669', '#ffffff', 1, 3),
+                      (13, 2, 'reward', '₹20 Reward', 20.0000, 5.000, 'gift', '#d97706', '#ffffff', 1, 4),
+                      (14, 2, 'no_reward', 'BETTER LUCK', 0.0000, 15.000, 'cross', '#334155', '#94a3b8', 1, 5),
+                      (15, 2, 'reward', '₹50 Reward', 50.0000, 1.500, 'sparkles', '#4f46e5', '#ffffff', 1, 6),
+                      (16, 2, 'money_back', '₹5 Return', 5.0000, 8.000, 'refresh', '#0d9488', '#ffffff', 1, 7)
+                    ON DUPLICATE KEY UPDATE `is_enabled` = 1
+                ");
+            }
+        } catch (\Throwable $e) {
+            error_log("SpinWheelEngine::seedDefaultOutcomesIfEmpty error: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Inspects transactions.type column enum and returns a supported type.
+     * If preferred type is not supported and cannot be altered, returns fallback type.
+     */
+    public static function getSafeTransactionType(PDO $db, string $preferredType, string $fallbackType = 'order'): string {
+        static $supportedTypes = null;
+
+        if ($supportedTypes === null) {
+            $supportedTypes = [];
+            try {
+                $stmt = $db->query("SHOW COLUMNS FROM `transactions` LIKE 'type'");
+                $row = $stmt->fetch();
+                if ($row && !empty($row['Type'])) {
+                    if (preg_match_all("/'([^']+)'/", $row['Type'], $m)) {
+                        $supportedTypes = $m[1];
+                    }
+                }
+            } catch (\Throwable $e) {
+                error_log("SpinWheelEngine::getSafeTransactionType check error: " . $e->getMessage());
+            }
+        }
+
+        if (in_array($preferredType, $supportedTypes, true)) {
+            return $preferredType;
+        }
+
+        // Try adding preferred type to transactions table ENUM
+        try {
+            $db->exec("
+                ALTER TABLE `transactions`
+                MODIFY COLUMN `type` ENUM('deposit', 'order', 'refund', 'bonus', 'admin_adjustment', 'spin_bet', 'spin_win') NOT NULL
+            ");
+            $supportedTypes[] = 'spin_bet';
+            $supportedTypes[] = 'spin_win';
+            if (in_array($preferredType, $supportedTypes, true)) {
+                return $preferredType;
+            }
+        } catch (\Throwable $ae) {
+            error_log("SpinWheelEngine::getSafeTransactionType alter notice: " . $ae->getMessage());
+        }
+
+        return $fallbackType;
     }
 
     /**
@@ -200,31 +425,37 @@ class SpinWheelEngine {
      * Generates or fetches an immutable configuration version snapshot for this bet
      */
     public static function getOrCreateConfigVersion(int $betId, ?int $adminId = null): ?int {
-        $db = Database::getConnection();
-        $outcomes = self::getOutcomesForBet($betId, true);
-        if (empty($outcomes)) return null;
+        try {
+            self::ensureTablesExist();
+            $db = Database::getConnection();
+            $outcomes = self::getOutcomesForBet($betId, true);
+            if (empty($outcomes)) return null;
 
-        $serialized = json_encode($outcomes);
-        $hash = hash('sha256', $serialized);
+            $serialized = json_encode($outcomes);
+            $hash = hash('sha256', (string)$serialized);
 
-        $stmt = $db->prepare("SELECT id FROM spin_wheel_config_versions WHERE bet_id = :bid AND version_hash = :hash LIMIT 1");
-        $stmt->execute(['bid' => $betId, 'hash' => $hash]);
-        $existing = $stmt->fetchColumn();
-        if ($existing) {
-            return (int)$existing;
+            $stmt = $db->prepare("SELECT id FROM spin_wheel_config_versions WHERE bet_id = :bid AND version_hash = :hash LIMIT 1");
+            $stmt->execute(['bid' => $betId, 'hash' => $hash]);
+            $existing = $stmt->fetchColumn();
+            if ($existing) {
+                return (int)$existing;
+            }
+
+            $ins = $db->prepare("
+                INSERT INTO spin_wheel_config_versions (bet_id, version_hash, outcomes_snapshot, total_probability, created_by)
+                VALUES (:bid, :hash, :snap, 100.000, :aid)
+            ");
+            $ins->execute([
+                'bid' => $betId,
+                'hash' => $hash,
+                'snap' => $serialized,
+                'aid' => $adminId
+            ]);
+            return (int)$db->lastInsertId();
+        } catch (\Throwable $e) {
+            error_log("SpinWheelEngine::getOrCreateConfigVersion non-fatal notice: " . $e->getMessage());
+            return null;
         }
-
-        $ins = $db->prepare("
-            INSERT INTO spin_wheel_config_versions (bet_id, version_hash, outcomes_snapshot, total_probability, created_by)
-            VALUES (:bid, :hash, :snap, 100.000, :aid)
-        ");
-        $ins->execute([
-            'bid' => $betId,
-            'hash' => $hash,
-            'snap' => $serialized,
-            'aid' => $adminId
-        ]);
-        return (int)$db->lastInsertId();
     }
 
     /**
@@ -377,48 +608,58 @@ class SpinWheelEngine {
         // Idempotency Protection: If this request UUID was already processed for this user, return existing record
         if ($requestUuid !== null && trim($requestUuid) !== '') {
             $safeUuid = substr(trim($requestUuid), 0, 64);
-            $checkStmt = $db->prepare("SELECT * FROM spin_spins WHERE uuid = :uuid AND user_id = :uid LIMIT 1");
-            $checkStmt->execute(['uuid' => $safeUuid, 'uid' => $userId]);
-            $existing = $checkStmt->fetch();
-            if ($existing) {
-                $balStmt = $db->prepare("SELECT balance FROM users WHERE id = :id");
-                $balStmt->execute(['id' => $userId]);
-                $userBal = (float)$balStmt->fetchColumn();
+            try {
+                $checkStmt = $db->prepare("SELECT * FROM spin_spins WHERE uuid = :uuid AND user_id = :uid LIMIT 1");
+                $checkStmt->execute(['uuid' => $safeUuid, 'uid' => $userId]);
+                $existing = $checkStmt->fetch();
+                if ($existing) {
+                    $balStmt = $db->prepare("SELECT balance FROM users WHERE id = :id");
+                    $balStmt->execute(['id' => $userId]);
+                    $userBal = (float)$balStmt->fetchColumn();
 
-                return [
-                    'success'           => true,
-                    'spin_id'           => (int)$existing['id'],
-                    'uuid'              => $existing['uuid'],
-                    'segment_index'     => (int)$existing['segment_index'],
-                    'target_angle'      => (float)$existing['final_angle'],
-                    'reward_type'       => $existing['reward_type'],
-                    'outcome_label'     => $existing['outcome_label'],
-                    'reward_amount'     => (float)$existing['reward_amount'],
-                    'formatted_reward'  => format_currency((float)$existing['reward_amount']),
-                    'deducted_balance'  => $userBal,
-                    'formatted_deducted_balance' => format_currency($userBal),
-                    'new_balance'       => $userBal,
-                    'formatted_balance' => format_currency($userBal),
-                    'is_retried'        => true
-                ];
+                    return [
+                        'success'           => true,
+                        'spin_id'           => (int)$existing['id'],
+                        'uuid'              => $existing['uuid'],
+                        'segment_index'     => (int)$existing['segment_index'],
+                        'target_angle'      => (float)$existing['final_angle'],
+                        'reward_type'       => $existing['reward_type'],
+                        'outcome_label'     => $existing['outcome_label'],
+                        'reward_amount'     => (float)$existing['reward_amount'],
+                        'formatted_reward'  => format_currency((float)$existing['reward_amount']),
+                        'bet_amount'        => (float)$existing['bet_amount'],
+                        'formatted_bet'     => format_currency((float)$existing['bet_amount']),
+                        'deducted_balance'  => $userBal,
+                        'formatted_deducted_balance' => format_currency($userBal),
+                        'new_balance'       => $userBal,
+                        'formatted_balance' => format_currency($userBal),
+                        'is_retried'        => true
+                    ];
+                }
+            } catch (\Throwable $ie) {
+                error_log("SpinWheelEngine idempotency check notice: " . $ie->getMessage());
             }
         }
 
         // Check recent cooldown to prevent accidental rapid double-clicks
         $cooldownSec = (int)get_setting('spin_wheel_cooldown_seconds', '2');
         if ($cooldownSec > 0) {
-            $coolStmt = $db->prepare("
-                SELECT created_at FROM spin_spins
-                WHERE user_id = :uid
-                ORDER BY id DESC LIMIT 1
-            ");
-            $coolStmt->execute(['uid' => $userId]);
-            $lastSpin = $coolStmt->fetchColumn();
-            if ($lastSpin) {
-                $lastTime = strtotime($lastSpin);
-                if (time() - $lastTime < $cooldownSec) {
-                    return ['success' => false, 'error' => 'Please wait a moment before spinning again.'];
+            try {
+                $coolStmt = $db->prepare("
+                    SELECT created_at FROM spin_spins
+                    WHERE user_id = :uid
+                    ORDER BY id DESC LIMIT 1
+                ");
+                $coolStmt->execute(['uid' => $userId]);
+                $lastSpin = $coolStmt->fetchColumn();
+                if ($lastSpin) {
+                    $lastTime = strtotime($lastSpin);
+                    if (time() - $lastTime < $cooldownSec) {
+                        return ['success' => false, 'error' => 'Please wait a moment before spinning again.'];
+                    }
                 }
+            } catch (\Throwable $ce) {
+                error_log("SpinWheelEngine cooldown check notice: " . $ce->getMessage());
             }
         }
 
@@ -469,13 +710,23 @@ class SpinWheelEngine {
                 ];
             }
 
-            // Deduct bet amount from user's wallet
-            $deductStmt = $db->prepare("
-                UPDATE users
-                SET balance = balance - :amt, spent = spent + :amt
-                WHERE id = :id AND balance >= :amt
-            ");
-            $deductStmt->execute(['amt' => $betAmount, 'id' => $userId]);
+            // Deduct bet amount from user's wallet (supports tables with or without 'spent' column)
+            try {
+                $deductStmt = $db->prepare("
+                    UPDATE users
+                    SET balance = balance - :amt, spent = spent + :amt
+                    WHERE id = :id AND balance >= :amt
+                ");
+                $deductStmt->execute(['amt' => $betAmount, 'id' => $userId]);
+            } catch (\Throwable $de) {
+                $deductStmt = $db->prepare("
+                    UPDATE users
+                    SET balance = balance - :amt
+                    WHERE id = :id AND balance >= :amt
+                ");
+                $deductStmt->execute(['amt' => $betAmount, 'id' => $userId]);
+            }
+
             if ($deductStmt->rowCount() === 0) {
                 $db->rollBack();
                 return ['success' => false, 'error' => 'Failed to deduct bet amount. Please retry.'];
@@ -486,21 +737,42 @@ class SpinWheelEngine {
                 ? substr(trim($requestUuid), 0, 64) 
                 : ('spn_' . bin2hex(random_bytes(10)));
 
-            // Record Debit Transaction
-            $txnBetStmt = $db->prepare("
-                INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                VALUES (:uid, 'spin_bet', :amt, 'system', :txnid, 'completed', :note)
-            ");
-            $txnBetStmt->execute([
-                'uid' => $userId,
-                'amt' => -$betAmount,
-                'txnid' => $spinUuid . '_bet',
-                'note' => 'Spin Wheel Bet: ' . format_currency($betAmount)
-            ]);
-            $betTxnId = (int)$db->lastInsertId();
+            // Record Debit Transaction safely
+            $betTxnType = self::getSafeTransactionType($db, 'spin_bet', 'order');
+            $betTxnId = null;
+            try {
+                $txnBetStmt = $db->prepare("
+                    INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
+                    VALUES (:uid, :type, :amt, 'system', :txnid, 'completed', :note)
+                ");
+                $txnBetStmt->execute([
+                    'uid' => $userId,
+                    'type' => $betTxnType,
+                    'amt' => -$betAmount,
+                    'txnid' => substr($spinUuid, 0, 100) . '_bet',
+                    'note' => 'Spin Wheel Bet: ' . format_currency($betAmount)
+                ]);
+                $betTxnId = (int)$db->lastInsertId();
+            } catch (\Throwable $te) {
+                error_log("SpinWheelEngine: Bet transaction insertion notice: " . $te->getMessage());
+                try {
+                    $txnBetStmt = $db->prepare("
+                        INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
+                        VALUES (:uid, 'order', :amt, 'system', :txnid, 'completed', :note)
+                    ");
+                    $txnBetStmt->execute([
+                        'uid' => $userId,
+                        'amt' => -$betAmount,
+                        'txnid' => substr($spinUuid, 0, 100) . '_b',
+                        'note' => 'Spin Wheel Bet: ' . format_currency($betAmount)
+                    ]);
+                    $betTxnId = (int)$db->lastInsertId();
+                } catch (\Throwable $te2) {
+                    error_log("SpinWheelEngine: Fallback bet transaction insertion failed: " . $te2->getMessage());
+                }
+            }
 
             // Secure CSPRNG outcome selection
-            // Map total probability (100,000 units) into cumulative ranges
             $randomNumber = random_int(1, self::TOTAL_PROBABILITY_UNITS); // 1 .. 100,000
             $cumulativeUnits = 0;
             $selectedOutcome = null;
@@ -523,7 +795,7 @@ class SpinWheelEngine {
                 $segmentIndex = count($outcomes) - 1;
             }
 
-            $rewardType = $selectedOutcome['reward_type'];
+            $rewardType = (string)$selectedOutcome['reward_type'];
             $rewardAmount = (float)$selectedOutcome['reward_amount'];
             $outcomeLabel = (string)$selectedOutcome['label'];
 
@@ -545,32 +817,51 @@ class SpinWheelEngine {
                     default      => 'Spin Wheel Reward: ' . format_currency($rewardAmount)
                 };
 
-                $txnWinStmt = $db->prepare("
-                    INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                    VALUES (:uid, 'spin_win', :amt, 'system', :txnid, 'completed', :note)
-                ");
-                $txnWinStmt->execute([
-                    'uid' => $userId,
-                    'amt' => $rewardAmount,
-                    'txnid' => $spinUuid . '_win',
-                    'note' => $rewardNote
-                ]);
-                $rewardTxnId = (int)$db->lastInsertId();
+                $winTxnType = self::getSafeTransactionType($db, 'spin_win', 'bonus');
+                try {
+                    $txnWinStmt = $db->prepare("
+                        INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
+                        VALUES (:uid, :type, :amt, 'system', :txnid, 'completed', :note)
+                    ");
+                    $txnWinStmt->execute([
+                        'uid' => $userId,
+                        'type' => $winTxnType,
+                        'amt' => $rewardAmount,
+                        'txnid' => substr($spinUuid, 0, 100) . '_win',
+                        'note' => $rewardNote
+                    ]);
+                    $rewardTxnId = (int)$db->lastInsertId();
+                } catch (\Throwable $we) {
+                    error_log("SpinWheelEngine: Win transaction insertion notice: " . $we->getMessage());
+                    try {
+                        $txnWinStmt = $db->prepare("
+                            INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
+                            VALUES (:uid, 'bonus', :amt, 'system', :txnid, 'completed', :note)
+                        ");
+                        $txnWinStmt->execute([
+                            'uid' => $userId,
+                            'amt' => $rewardAmount,
+                            'txnid' => substr($spinUuid, 0, 100) . '_w',
+                            'note' => $rewardNote
+                        ]);
+                        $rewardTxnId = (int)$db->lastInsertId();
+                    } catch (\Throwable $we2) {
+                        error_log("SpinWheelEngine: Fallback win transaction insertion failed: " . $we2->getMessage());
+                    }
+                }
             }
 
-            // Get or create config version snapshot
+            // Get or create config version snapshot safely
             $cfgVersionId = self::getOrCreateConfigVersion($betId);
 
             // Calculate precise segment angle for wheel pointer
-            // Segment center angle relative to top pointer (12 o'clock)
             $totalSegments = count($outcomes);
-            $segmentArc = 360 / $totalSegments;
-            // Midpoint of target segment:
-            $segmentCenterAngle = ($segmentIndex * $segmentArc) + ($segmentArc / 2);
-            // Target final angle to align segment center with top pointer:
-            // Since pointer is at top (0 deg / 360 deg), rotating the wheel clockwise means
-            // the angle at the pointer is (360 - (wheel_rotation % 360))
-            $targetAngle = round((360 - $segmentCenterAngle) % 360, 2);
+            $segmentArc = 360.0 / $totalSegments;
+            $segmentCenterAngle = ($segmentIndex * $segmentArc) + ($segmentArc / 2.0);
+            $targetAngle = round(fmod((360.0 - $segmentCenterAngle) + 360.0, 360.0), 2);
+
+            // Sanitize reward type enum for spin_spins table
+            $safeRewardType = in_array($rewardType, ['jackpot', 'reward', 'money_back', 'no_reward'], true) ? $rewardType : 'no_reward';
 
             // Record spin ledger entry
             $spinStmt = $db->prepare("
@@ -590,7 +881,7 @@ class SpinWheelEngine {
                 'bid' => $betId,
                 'bamt' => $betAmount,
                 'oid' => (int)$selectedOutcome['id'],
-                'rtype' => $rewardType,
+                'rtype' => $safeRewardType,
                 'olabel' => $outcomeLabel,
                 'ramt' => $rewardAmount,
                 'sidx' => $segmentIndex,
@@ -631,7 +922,7 @@ class SpinWheelEngine {
             if ($db->inTransaction()) {
                 $db->rollBack();
             }
-            error_log("SpinWheelEngine::executeSpin exception: " . $e->getMessage());
+            error_log("SpinWheelEngine::executeSpin exception [User #{$userId}, Bet #{$betId}]: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return [
                 'success' => false,
                 'error' => 'An unexpected error occurred while processing your spin. No funds were debited.'

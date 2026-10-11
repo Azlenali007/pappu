@@ -32,16 +32,31 @@ if (!Auth::check()) {
 
 $user = Auth::user();
 $userId = (int)$user['id'];
-$action = $_GET['action'] ?? $_POST['action'] ?? 'get_config';
+
+// Support both form-data/x-www-form-urlencoded and application/json requests
+$jsonPayload = [];
+$contentType = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
+if (stripos($contentType, 'application/json') !== false) {
+    $rawInput = file_get_contents('php://input');
+    if ($rawInput !== false && trim($rawInput) !== '') {
+        $decoded = json_decode($rawInput, true);
+        if (is_array($decoded)) {
+            $jsonPayload = $decoded;
+        }
+    }
+}
+
+$action = $_GET['action'] ?? $_POST['action'] ?? $jsonPayload['action'] ?? 'get_config';
 
 try {
     switch ($action) {
         case 'get_config':
-            $betId = (int)($_GET['bet_id'] ?? $_POST['bet_id'] ?? 0);
+            $betId = (int)($_GET['bet_id'] ?? $_POST['bet_id'] ?? $jsonPayload['bet_id'] ?? 0);
             if ($betId <= 0) {
                 // Fetch first available active bet
                 $activeBets = SpinWheelEngine::getBets(true);
                 if (empty($activeBets)) {
+                    http_response_code(404);
                     echo json_encode([
                         'success' => false,
                         'error' => 'No active bet amounts configured at this time.'
@@ -53,6 +68,7 @@ try {
 
             $config = SpinWheelEngine::getPublicWheelConfig($betId);
             if (isset($config['error'])) {
+                http_response_code(400);
                 echo json_encode([
                     'success' => false,
                     'error' => $config['error']
@@ -71,6 +87,7 @@ try {
                 ];
             }, $allActiveBets);
 
+            http_response_code(200);
             echo json_encode([
                 'success' => true,
                 'wheel_enabled' => SpinWheelEngine::isEnabled(),
@@ -90,7 +107,7 @@ try {
             }
 
             // CSRF Verification with JSON response
-            $csrfToken = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+            $csrfToken = $_POST['csrf_token'] ?? $jsonPayload['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
             if (!CSRF::validate($csrfToken)) {
                 http_response_code(403);
                 echo json_encode([
@@ -100,20 +117,31 @@ try {
                 exit;
             }
 
-            $betId = (int)($_POST['bet_id'] ?? 0);
+            $betId = (int)($_POST['bet_id'] ?? $jsonPayload['bet_id'] ?? $_GET['bet_id'] ?? 0);
             if ($betId <= 0) {
+                http_response_code(400);
                 echo json_encode(['success' => false, 'error' => 'Invalid bet amount selected.']);
                 exit;
             }
 
-            $requestId = trim((string)($_POST['request_id'] ?? ''));
+            $requestId = trim((string)($_POST['request_id'] ?? $jsonPayload['request_id'] ?? ''));
             $spinResult = SpinWheelEngine::executeSpin($userId, $betId, $requestId !== '' ? $requestId : null);
+
+            if (!empty($spinResult['insufficient_balance'])) {
+                http_response_code(400);
+            } elseif (empty($spinResult['success'])) {
+                http_response_code(422);
+            } else {
+                http_response_code(200);
+            }
+
             echo json_encode($spinResult);
             exit;
 
         case 'recent_winners':
-            $limit = min(25, max(5, (int)($_GET['limit'] ?? 10)));
+            $limit = min(25, max(5, (int)($_GET['limit'] ?? $jsonPayload['limit'] ?? 10)));
             $winners = SpinWheelEngine::getRecentWinners($limit);
+            http_response_code(200);
             echo json_encode([
                 'success' => true,
                 'winners' => $winners
@@ -121,11 +149,13 @@ try {
             exit;
 
         default:
+            http_response_code(400);
             echo json_encode(['success' => false, 'error' => 'Unknown action requested.']);
             exit;
     }
 } catch (\Throwable $e) {
-    error_log("api/spin.php error: " . $e->getMessage());
+    error_log("api/spin.php uncaught error: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+    http_response_code(500);
     echo json_encode([
         'success' => false,
         'error' => 'An unexpected server error occurred. Please try again.'
