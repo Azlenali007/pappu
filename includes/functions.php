@@ -1058,4 +1058,148 @@ function split_sql_statements(string $sql): array {
     return $statements;
 }
 
+/**
+ * =========================================================================
+ * FLASH SALE ENGINE - REALTIME PRICING, SCOPING & LIFECYCLE
+ * =========================================================================
+ */
+
+function ensure_flash_sales_table_exists(?PDO $db = null): void {
+    static $ensured = false;
+    if ($ensured) return;
+    try {
+        $db = $db ?: Database::getConnection();
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS `flash_sales` (
+              `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+              `title` VARCHAR(191) NOT NULL,
+              `subtitle` VARCHAR(255) NULL,
+              `badge_text` VARCHAR(64) NOT NULL DEFAULT 'FLASH SALE',
+              `discount_type` ENUM('percentage', 'fixed') NOT NULL DEFAULT 'percentage',
+              `discount_value` DECIMAL(10, 4) NOT NULL DEFAULT 20.0000,
+              `scope_type` ENUM('all', 'category', 'services') NOT NULL DEFAULT 'all',
+              `category_id` INT UNSIGNED NULL,
+              `service_ids` TEXT NULL,
+              `starts_at` DATETIME NOT NULL,
+              `ends_at` DATETIME NOT NULL,
+              `status` ENUM('active', 'inactive', 'archived') NOT NULL DEFAULT 'active',
+              `max_orders` INT UNSIGNED NULL,
+              `orders_count` INT UNSIGNED NOT NULL DEFAULT 0,
+              `banner_bg` VARCHAR(64) NOT NULL DEFAULT 'from-blue-600 via-indigo-600 to-purple-600',
+              `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              INDEX `idx_flash_status_dates` (`status`, `starts_at`, `ends_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ");
+        $ensured = true;
+    } catch (\Throwable $e) {
+        error_log("Flash sale table check: " . $e->getMessage());
+    }
+}
+
+function get_active_flash_sales(?int $limit = null): array {
+    ensure_flash_sales_table_exists();
+    try {
+        $db = Database::getConnection();
+        $sql = "
+            SELECT fs.*, c.name AS category_name, c.platform AS category_platform
+            FROM flash_sales fs
+            LEFT JOIN categories c ON fs.category_id = c.id
+            WHERE fs.status = 'active'
+              AND fs.starts_at <= NOW()
+              AND fs.ends_at > NOW()
+              AND (fs.max_orders IS NULL OR fs.orders_count < fs.max_orders)
+            ORDER BY fs.starts_at DESC
+        ";
+        if ($limit !== null && $limit > 0) {
+            $sql .= " LIMIT " . (int)$limit;
+        }
+        $stmt = $db->query($sql);
+        $sales = $stmt->fetchAll() ?: [];
+        $now = time();
+        foreach ($sales as &$sale) {
+            $endTimestamp = strtotime((string)$sale['ends_at']);
+            $sale['remaining_seconds'] = max(0, $endTimestamp - $now);
+            $sale['hours'] = floor($sale['remaining_seconds'] / 3600);
+            $sale['minutes'] = floor(($sale['remaining_seconds'] % 3600) / 60);
+            $sale['seconds'] = $sale['remaining_seconds'] % 60;
+            $sale['discount_formatted'] = $sale['discount_type'] === 'percentage'
+                ? rtrim(rtrim(number_format((float)$sale['discount_value'], 2), '0'), '.') . '%'
+                : format_currency((float)$sale['discount_value']);
+        }
+        unset($sale);
+        return $sales;
+    } catch (\Throwable $e) {
+        error_log("get_active_flash_sales error: " . $e->getMessage());
+        return [];
+    }
+}
+
+function get_service_flash_sale_discount(int $serviceId, int $categoryId, float $baseRate, ?array $activeSales = null): ?array {
+    if ($activeSales === null) {
+        $activeSales = get_active_flash_sales();
+    }
+    if (empty($activeSales)) {
+        return null;
+    }
+
+    $bestMatch = null;
+    $maxSavings = -1.0;
+
+    foreach ($activeSales as $sale) {
+        $applies = false;
+        $scope = $sale['scope_type'];
+        if ($scope === 'all') {
+            $applies = true;
+        } elseif ($scope === 'category') {
+            $applies = ((int)($sale['category_id'] ?? 0) === $categoryId);
+        } elseif ($scope === 'services') {
+            $ids = array_filter(array_map('intval', explode(',', (string)($sale['service_ids'] ?? ''))));
+            $applies = in_array($serviceId, $ids, true);
+        }
+
+        if (!$applies) continue;
+
+        $discountVal = (float)$sale['discount_value'];
+        if ($sale['discount_type'] === 'percentage') {
+            $discountAmount = $baseRate * ($discountVal / 100.0);
+            $discountPercent = round($discountVal);
+        } else {
+            $discountAmount = min($baseRate, $discountVal);
+            $discountPercent = $baseRate > 0 ? round(($discountAmount / $baseRate) * 100) : 0;
+        }
+        $saleRate = max(0.0001, round($baseRate - $discountAmount, 4));
+
+        if ($discountAmount > $maxSavings) {
+            $maxSavings = $discountAmount;
+            $bestMatch = [
+                'flash_sale_id' => (int)$sale['id'],
+                'title' => (string)$sale['title'],
+                'badge' => (string)($sale['badge_text'] ?: 'FLASH SALE'),
+                'discount_type' => (string)$sale['discount_type'],
+                'discount_value' => $discountVal,
+                'discount_percent' => (int)$discountPercent,
+                'discount_amount' => round($discountAmount, 4),
+                'original_rate' => $baseRate,
+                'sale_rate' => $saleRate,
+                'ends_at' => (string)$sale['ends_at'],
+                'remaining_seconds' => (int)($sale['remaining_seconds'] ?? 0)
+            ];
+        }
+    }
+
+    return $bestMatch;
+}
+
+function increment_flash_sale_orders(int $saleId): void {
+    if ($saleId <= 0) return;
+    try {
+        $db = Database::getConnection();
+        $stmt = $db->prepare("UPDATE flash_sales SET orders_count = orders_count + 1 WHERE id = :id");
+        $stmt->execute(['id' => $saleId]);
+    } catch (\Throwable $e) {
+        error_log("increment_flash_sale_orders error: " . $e->getMessage());
+    }
+}
+
 

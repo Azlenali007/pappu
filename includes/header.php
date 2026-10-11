@@ -27,13 +27,13 @@ $adminNavLinks = [
     ['name' => 'Orders', 'url' => '/admin/orders.php', 'icon' => '📦'],
     ['name' => 'Categories', 'url' => '/admin/categories.php', 'icon' => '📁'],
     ['name' => 'Services', 'url' => '/admin/services.php', 'icon' => '⚡'],
+    ['name' => 'Flash Sales', 'url' => '/admin/flash-sales.php', 'icon' => '🔥'],
     ['name' => 'Providers', 'url' => '/admin/providers.php', 'icon' => '🔌'],
     ['name' => 'Payments', 'url' => '/admin/payments.php', 'icon' => '💳'],
     ['name' => 'Referrals', 'url' => '/admin/referrals.php', 'icon' => '🎁'],
     ['name' => 'Currencies', 'url' => '/admin/currencies.php', 'icon' => '💱'],
     ['name' => 'Transactions', 'url' => '/admin/transactions.php', 'icon' => '📑'],
     ['name' => 'Tickets', 'url' => '/admin/tickets.php', 'icon' => '💬'],
-    ['name' => 'Spin Wheel', 'url' => '/admin/spin-wheel.php', 'icon' => '🎡'],
     ['name' => 'Announcements', 'url' => '/admin/announcements.php', 'icon' => '📢'],
     ['name' => 'Settings', 'url' => '/admin/settings.php', 'icon' => '⚙️'],
 ];
@@ -297,12 +297,6 @@ $adminNavLinks = [
                         </a>
                         <a href="/user/api.php" class="px-3 py-1.5 rounded-xl text-xs font-bold transition-colors <?= str_contains($currentScript, 'api.php') ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' ?>">
                             API
-                        </a>
-                        <a href="/user/spin.php" class="px-3 py-1.5 rounded-xl text-xs font-bold transition-colors <?= str_contains($currentScript, 'spin.php') ? 'bg-purple-50 text-purple-700 font-extrabold' : 'text-purple-600 hover:text-purple-800 hover:bg-purple-50' ?>">
-                            <span class="inline-flex items-center gap-1">
-                                <svg class="w-3.5 h-3.5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                <span>Spin &amp; Win</span>
-                            </span>
                         </a>
                         <a href="/user/tickets.php" class="px-3 py-1.5 rounded-xl text-xs font-bold transition-colors <?= str_contains($currentScript, 'tickets.php') ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' ?>">
                             Support

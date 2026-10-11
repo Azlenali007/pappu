@@ -136,7 +136,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $svc['name']
         );
     } else {
-        $serverCharge = round(($quantity / 1000) * (float)$svc['rate_per_1000'], 4);
+        $origRate = (float)$svc['rate_per_1000'];
+        $flashDiscount = get_service_flash_sale_discount((int)$svc['id'], (int)$svc['category_id'], $origRate);
+        $effectiveRate = $flashDiscount ? $flashDiscount['sale_rate'] : $origRate;
+        $discountAmount = $flashDiscount ? round(($quantity / 1000) * $flashDiscount['discount_amount'], 4) : 0.0;
+        $flashSaleId = $flashDiscount ? $flashDiscount['flash_sale_id'] : null;
+
+        $serverCharge = round(($quantity / 1000) * $effectiveRate, 4);
         $token = bin2hex(random_bytes(16));
 
         // Store authoritative order configuration in session for checkout
@@ -148,7 +154,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             'service_type' => (string)($svc['service_type'] ?? 'default'),
             'link' => $link,
             'quantity' => $quantity,
-            'rate_per_1000' => (float)$svc['rate_per_1000'],
+            'rate_per_1000' => $effectiveRate,
+            'original_rate_per_1000' => $origRate,
+            'is_flash_sale' => ($flashDiscount !== null),
+            'flash_sale_id' => $flashSaleId,
+            'flash_badge' => $flashDiscount['badge'] ?? null,
+            'flash_discount_amount' => $discountAmount,
             'calculated_charge' => $serverCharge,
             'token' => $token,
             'created_at' => time()
@@ -195,9 +206,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (!isset($_POST['action']) || $_POST
         } elseif ($quantity < (int)$service['min_quantity'] || $quantity > (int)$service['max_quantity']) {
             $error = "Quantity out of allowed limits for this service.";
         } else {
-            // Recalculate authoritative server charge in base currency
-            $ratePer1000 = (float)$service['rate_per_1000'];
-            $charge = round(($quantity / 1000) * $ratePer1000, 4);
+            // Recalculate authoritative server charge in base currency (applying active flash sale)
+            $origRate = (float)$service['rate_per_1000'];
+            $flashDiscount = get_service_flash_sale_discount((int)$service['id'], (int)$service['category_id'], $origRate);
+            $effectiveRate = $flashDiscount ? $flashDiscount['sale_rate'] : $origRate;
+            $discountAmount = $flashDiscount ? round(($quantity / 1000) * $flashDiscount['discount_amount'], 4) : 0.0;
+            $flashSaleId = $flashDiscount ? $flashDiscount['flash_sale_id'] : null;
+
+            $charge = round(($quantity / 1000) * $effectiveRate, 4);
 
             if ($user['balance'] < $charge) {
                 $error = sprintf(
@@ -221,21 +237,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (!isset($_POST['action']) || $_POST
                         throw new Exception("Balance deduction failed due to insufficient funds.");
                     }
 
-                    // 2. Insert new order record
+                    // 2. Insert new order record (with flash sale tracking if applicable)
                     $insOrder = $db->prepare("
-                        INSERT INTO orders (user_id, service_id, provider_id, link, quantity, charge, start_count, remains, status, mode)
-                        VALUES (:uid, :sid, :pid, :link, :qty, :charge, 0, :remains, 'processing', 'auto')
+                        INSERT INTO orders (user_id, service_id, flash_sale_id, provider_id, link, quantity, charge, discount_amount, start_count, remains, status, mode)
+                        VALUES (:uid, :sid, :fsid, :pid, :link, :qty, :charge, :disc, 0, :remains, 'processing', 'auto')
                     ");
                     $insOrder->execute([
                         'uid' => $user['id'],
                         'sid' => $service['id'],
+                        'fsid' => $flashSaleId,
                         'pid' => $service['provider_id'] ?: null,
                         'link' => $link,
                         'qty' => $quantity,
                         'charge' => $charge,
+                        'disc' => $discountAmount,
                         'remains' => $quantity
                     ]);
                     $orderId = (int)$db->lastInsertId();
+
+                    if ($flashSaleId) {
+                        increment_flash_sale_orders($flashSaleId);
+                    }
 
                     // 3. Dispatch to live external provider if mapped
                     $providerOrderId = null;
@@ -308,7 +330,10 @@ if ($pendingOrder && !empty($pendingOrder['service_id'])) {
         }
     }
     if ($selectedService) {
-        $finalCharge = round(((int)$pendingOrder['quantity'] / 1000) * (float)$selectedService['rate_per_1000'], 4);
+        $origRate = (float)$selectedService['rate_per_1000'];
+        $flashDiscount = get_service_flash_sale_discount((int)$selectedService['id'], (int)$selectedService['category_id'], $origRate);
+        $effectiveRate = $flashDiscount ? $flashDiscount['sale_rate'] : $origRate;
+        $finalCharge = round(((int)$pendingOrder['quantity'] / 1000) * $effectiveRate, 4);
     }
 }
 
@@ -316,6 +341,7 @@ if ($pendingOrder && !empty($pendingOrder['service_id'])) {
 $showConfigStep = isset($_GET['edit']) || empty($pendingOrder['link']) || empty($pendingOrder['service_id']);
 
 // Prepare lightweight JSON payloads for client-side reactive filtering
+$activeFlashSales = get_active_flash_sales();
 $categoriesJson = [];
 foreach ($allCategories as $c) {
     $categoriesJson[] = [
@@ -328,12 +354,23 @@ foreach ($allCategories as $c) {
 
 $servicesJson = [];
 foreach ($allServices as $s) {
+    $origRate = (float)$s['rate_per_1000'];
+    $flashDisc = get_service_flash_sale_discount((int)$s['id'], (int)$s['category_id'], $origRate, $activeFlashSales);
+    $isFlash = ($flashDisc !== null);
+    $saleRate = $isFlash ? $flashDisc['sale_rate'] : $origRate;
+
     $servicesJson[] = [
         'id' => (int)$s['id'],
         'category_id' => (int)$s['category_id'],
         'name' => (string)$s['name'],
-        'rate' => (float)$s['rate_per_1000'],
-        'rate_formatted' => format_currency((float)$s['rate_per_1000']),
+        'is_flash_sale' => $isFlash,
+        'flash_badge' => $flashDisc['badge'] ?? null,
+        'flash_discount_percent' => $flashDisc['discount_percent'] ?? 0,
+        'original_rate' => $origRate,
+        'original_rate_formatted' => format_currency($origRate),
+        'sale_rate' => $saleRate,
+        'rate' => $saleRate,
+        'rate_formatted' => format_currency($saleRate),
         'min' => (int)$s['min_quantity'],
         'max' => (int)$s['max_quantity'],
         'min_formatted' => number_format((int)$s['min_quantity']),
@@ -457,10 +494,26 @@ require_once __DIR__ . '/../includes/header.php';
                 <!-- DYNAMIC SERVICE DETAILS DISPLAY -->
                 <template x-if="currentService">
                     <div class="p-4 rounded-2xl bg-cyan-50/60 border border-cyan-100 text-xs space-y-3">
+                        <template x-if="currentService.is_flash_sale">
+                            <div class="p-3 rounded-xl bg-gradient-to-r from-rose-500 via-purple-600 to-indigo-600 text-white flex items-center justify-between text-xs font-bold shadow-xs">
+                                <div class="flex items-center gap-2">
+                                    <span class="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center text-sm">⚡</span>
+                                    <div>
+                                        <span class="block text-xs font-black">Flash Sale Discount Applied!</span>
+                                        <span class="text-[10px] text-rose-100 font-medium" x-text="currentService.flash_badge || ('Save ' + currentService.flash_discount_percent + '%')"></span>
+                                    </div>
+                                </div>
+                                <div class="text-right">
+                                    <span class="text-[10px] text-rose-200 line-through block" x-text="currentService.original_rate_formatted"></span>
+                                    <span class="text-sm font-black text-white" x-text="currentService.rate_formatted"></span>
+                                </div>
+                            </div>
+                        </template>
+
                         <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
                             <div class="p-2.5 rounded-xl bg-white border border-cyan-100/60 shadow-xs">
                                 <span class="block text-[10px] uppercase font-bold text-slate-400">Rate / 1K</span>
-                                <strong class="text-sm font-black text-cyan-900 font-mono-nums" x-text="currentService.rate_formatted"></strong>
+                                <strong class="text-sm font-black font-mono-nums" :class="currentService.is_flash_sale ? 'text-rose-600' : 'text-cyan-900'" x-text="currentService.rate_formatted"></strong>
                             </div>
                             <div class="p-2.5 rounded-xl bg-white border border-cyan-100/60 shadow-xs">
                                 <span class="block text-[10px] uppercase font-bold text-slate-400">Min Quantity</span>
@@ -691,6 +744,22 @@ require_once __DIR__ . '/../includes/header.php';
                 <?= CSRF::field() ?>
                 <input type="hidden" name="action" value="submit_order">
                 <input type="hidden" name="order_token" value="<?= e($pendingOrder['token'] ?? '') ?>">
+
+                <!-- Flash Sale savings notice on Step 2 checkout -->
+                <?php if (!empty($pendingOrder['is_flash_sale'])): ?>
+                    <div class="p-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-purple-600 text-white flex items-center justify-between text-xs shadow-md shadow-rose-500/20">
+                        <div class="flex items-center gap-2">
+                            <span class="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center font-bold">⚡</span>
+                            <div>
+                                <span class="font-extrabold block"><?= e($pendingOrder['flash_badge'] ?: 'Flash Sale Applied') ?></span>
+                                <span class="text-[10px] text-rose-100">Discounted promotional rate</span>
+                            </div>
+                        </div>
+                        <span class="px-2 py-0.5 rounded-full bg-white/20 text-[11px] font-black">
+                            Saved <?= format_currency($pendingOrder['flash_discount_amount'] ?? 0) ?>
+                        </span>
+                    </div>
+                <?php endif; ?>
 
                 <!-- 1. CHARGE FIELD ONLY (Pale mint background, dark blue label) -->
                 <div>

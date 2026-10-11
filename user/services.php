@@ -50,6 +50,19 @@ try {
     $servicesList = [];
 }
 
+// Fetch Active Flash Sales for Discount Calculations & Filters
+$activeFlashSales = get_active_flash_sales();
+$saleIdFilter = (int)($_GET['sale_id'] ?? 0);
+$activeSaleObj = null;
+if ($saleIdFilter > 0) {
+    foreach ($activeFlashSales as $afs) {
+        if ((int)$afs['id'] === $saleIdFilter) {
+            $activeSaleObj = $afs;
+            break;
+        }
+    }
+}
+
 // Helper for platform-specific badge and styling
 function get_platform_info(string $platform): array {
     $p = strtolower($platform);
@@ -145,6 +158,11 @@ foreach ($servicesList as $s) {
         ? '/user/new-order.php?service_id=' . (int)$s['id'] 
         : '/login.php?redirect=' . urlencode('/user/new-order.php?service_id=' . (int)$s['id']);
 
+    $origRate = (float)$s['rate_per_1000'];
+    $flashDisc = get_service_flash_sale_discount((int)$s['id'], (int)$s['category_id'], $origRate, $activeFlashSales);
+    $isFlash = ($flashDisc !== null);
+    $saleRate = $isFlash ? $flashDisc['sale_rate'] : $origRate;
+
     $servicesJsonData[] = [
         'id' => (int)$s['id'],
         'category_id' => (int)$s['category_id'],
@@ -152,8 +170,15 @@ foreach ($servicesList as $s) {
         'platform' => $p,
         'platform_label' => $theme['label'],
         'name' => $s['name'],
-        'rate' => (float)$s['rate_per_1000'],
-        'rate_formatted' => format_currency((float)$s['rate_per_1000']),
+        'is_flash_sale' => $isFlash,
+        'flash_sale_id' => $flashDisc['flash_sale_id'] ?? null,
+        'flash_badge' => $flashDisc['badge'] ?? null,
+        'flash_discount_percent' => $flashDisc['discount_percent'] ?? 0,
+        'original_rate' => $origRate,
+        'original_rate_formatted' => format_currency($origRate),
+        'sale_rate' => $saleRate,
+        'rate' => $saleRate,
+        'rate_formatted' => format_currency($saleRate),
         'min' => (int)$s['min_quantity'],
         'min_formatted' => number_format((int)$s['min_quantity']),
         'max' => (int)$s['max_quantity'],
@@ -195,6 +220,28 @@ require_once __DIR__ . '/../includes/header.php';
             </div>
         <?php endif; ?>
     </div>
+
+    <?php if ($activeSaleObj): ?>
+        <!-- Active Flash Sale Promotion Banner -->
+        <div class="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 rounded-3xl p-5 sm:p-6 text-white shadow-lg shadow-indigo-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div class="flex items-center gap-3.5">
+                <div class="w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center text-xl shrink-0 border border-white/20">
+                    ⚡
+                </div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span class="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-white/20 text-white border border-white/30"><?= e($activeSaleObj['badge_text']) ?></span>
+                        <h2 class="text-base font-black"><?= e($activeSaleObj['title']) ?></h2>
+                    </div>
+                    <p class="text-xs text-indigo-100 mt-0.5"><?= e($activeSaleObj['subtitle'] ?: 'Exclusive limited-time promotional pricing active across these services!') ?></p>
+                </div>
+            </div>
+            <a href="/user/services.php" class="px-4 py-2.5 rounded-xl bg-white text-indigo-900 font-extrabold text-xs hover:bg-indigo-50 shadow-sm shrink-0 transition-all flex items-center gap-1.5">
+                <span>Show All Services</span>
+                <span>&rarr;</span>
+            </a>
+        </div>
+    <?php endif; ?>
 
     <!-- Header Banner & Interactive Search / Filter Panel -->
     <div class="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-sm space-y-6">
@@ -395,15 +442,26 @@ require_once __DIR__ . '/../includes/header.php';
                         <div class="flex items-baseline justify-between mb-3">
                             <div>
                                 <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Price per 1K</span>
-                                <div class="flex items-baseline">
-                                    <span class="text-xl sm:text-2xl font-black text-slate-900 tabular-nums" x-text="item.rate_formatted"></span>
-                                    <span class="text-xs font-semibold text-slate-500 ml-1">/ 1K</span>
+                                <div class="flex items-baseline gap-1.5">
+                                    <template x-if="item.is_flash_sale">
+                                        <span class="text-xs font-bold text-slate-400 line-through tabular-nums" x-text="item.original_rate_formatted"></span>
+                                    </template>
+                                    <span class="text-xl sm:text-2xl font-black tabular-nums" :class="item.is_flash_sale ? 'text-rose-600' : 'text-slate-900'" x-text="item.rate_formatted"></span>
+                                    <span class="text-xs font-semibold text-slate-500 ml-0.5">/ 1K</span>
                                 </div>
                             </div>
-                            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                Active
-                            </span>
+                            <template x-if="item.is_flash_sale">
+                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-rose-50 text-rose-600 border border-rose-200 shadow-xs">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+                                    <span x-text="item.flash_badge || ('-' + item.flash_discount_percent + '%')"></span>
+                                </span>
+                            </template>
+                            <template x-if="!item.is_flash_sale">
+                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                    Active
+                                </span>
+                            </template>
                         </div>
 
                         <!-- Dual Action Buttons: Order Now & View Details -->
@@ -530,11 +588,18 @@ function servicesHub() {
         searchQuery: '<?= e(addslashes($search)) ?>',
         selectedPlatform: '<?= e(addslashes($platformFilter)) ?>',
         selectedCategory: '<?= e(addslashes($categoryParam)) ?>',
+        flashSaleFilter: <?= $saleIdFilter ?>,
         sortBy: 'default',
         activeModalService: null,
 
         get filteredServices() {
             let list = this.services.filter(s => {
+                // Flash sale filter
+                if (this.flashSaleFilter > 0) {
+                    if (s.flash_sale_id !== this.flashSaleFilter && !s.is_flash_sale) {
+                        return false;
+                    }
+                }
                 // Platform filter
                 if (this.selectedPlatform !== 'all' && s.platform.toLowerCase() !== this.selectedPlatform.toLowerCase()) {
                     return false;

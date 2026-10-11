@@ -43,6 +43,8 @@ window.notify = {
         }
         return window.confirm(message);
     }
+};
+
 // Global Premium Theme Manager (Zero-reload, persistent, system-aware)
 window.ThemeManager = {
     get: function() {

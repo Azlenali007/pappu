@@ -60,17 +60,7 @@ function cardCarousel(initialItems) {
             glow: 'rgba(245, 158, 11, 0.45)',
             link: '/user/orders.php',
             action: 'Open →'
-        },
-        {
-            id: 'spin-win',
-            title: 'Spin & Win',
-            subtitle: 'Spin the wheel for instant cash & jackpots',
-            badge: 'Instant Rewards',
-            icon: '🎡',
-            bgClass: 'from-purple-600 via-indigo-600 to-pink-600',
-            glow: 'rgba(168, 85, 247, 0.55)',
-            link: '/user/spin.php',
-            action: 'Spin Now →'
+
         },
         {
             id: 'refer-earn',

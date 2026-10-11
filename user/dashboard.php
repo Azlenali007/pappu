@@ -11,7 +11,6 @@ require_once __DIR__ . '/../includes/config.php';
 require_once __DIR__ . '/../includes/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
-require_once __DIR__ . '/../includes/spin_wheel_engine.php';
 
 Auth::requireLogin();
 
@@ -41,6 +40,9 @@ try {
 } catch (Exception $e) {
     error_log("Announcement check: " . $e->getMessage());
 }
+
+// 2. Fetch Active Flash Sales for Dashboard Banner
+$dashboardFlashSales = get_active_flash_sales(5);
 
 // Assemble Dynamic 3D Carousel Cards respecting Admin feature settings (Requirement 1)
 $carouselCards = [];
@@ -114,20 +116,6 @@ $carouselCards[] = [
     'action' => 'Open →'
 ];
 
-// 6. Spin & Win (Instant Cash & Jackpot rewards)
-if (SpinWheelEngine::isEnabled()) {
-    $carouselCards[] = [
-        'id' => 'spin-win',
-        'title' => 'Spin & Win',
-        'subtitle' => 'Try your luck',
-        'badge' => 'Instant Rewards',
-        'icon' => '🎡',
-        'bgClass' => 'from-purple-600 via-indigo-600 to-pink-600',
-        'glow' => 'rgba(168, 85, 247, 0.55)',
-        'link' => '/user/spin.php',
-        'action' => 'Spin Now →'
-    ];
-}
 
 // 7. Refer & Earn (if enabled in Admin)
 if (get_setting('referral_enabled', '1') === '1') {
@@ -249,15 +237,6 @@ require_once __DIR__ . '/../includes/header.php';
                             </svg>
                         </template>
 
-                        <!-- 5. Spin & Win Wheel Icon -->
-                        <template x-if="item.id === 'spin-win'">
-                            <svg class="w-7 h-7 sm:w-8 sm:h-8 text-white drop-shadow-md" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <circle cx="12" cy="12" r="9" stroke-width="2"/>
-                                <circle cx="12" cy="12" r="2.5" stroke-width="2"/>
-                                <path stroke-width="1.75" stroke-linecap="round" d="M12 3v6.5M12 14.5V21M3 12h6.5M14.5 12H21M5.636 5.636l4.596 4.596M13.768 13.768l4.596 4.596M18.364 5.636l-4.596 4.596M10.232 13.768l-4.596 4.596"/>
-                                <polygon points="12,1 10,4.5 14,4.5" fill="currentColor"/>
-                            </svg>
-                        </template>
 
                         <!-- 6. Refer & Earn Gift/Reward Icon -->
                         <template x-if="item.id === 'refer-earn'">
@@ -385,61 +364,135 @@ require_once __DIR__ . '/../includes/header.php';
         </a>
     </div>
 
-    <!-- 6. BOTTOM NAVIGATION BAR (Exact replica of reference dock layout) -->
-    <div class="bg-white/90 backdrop-blur-xl border border-white/90 rounded-3xl p-4 sm:p-5 shadow-[0_10px_35px_-10px_rgba(15,23,42,0.07)] flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
-        <!-- Left: SMM Panel logo + Tagline -->
-        <div class="flex items-center gap-2.5">
-            <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-sm">
-                <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                </svg>
+    <!-- 6. FLASH SALE SHOWCASE SECTION (Replaces Quick Access dock matching reference) -->
+    <div x-data="dashboardFlashSaleSection(<?= htmlspecialchars(json_encode($dashboardFlashSales), ENT_QUOTES, 'UTF-8') ?>)" 
+         class="mt-6">
+        
+        <template x-if="sales.length > 0">
+            <!-- Active Flash Sale Showcase Card -->
+            <div class="relative overflow-hidden rounded-3xl bg-white/95 backdrop-blur-xl border border-white/90 p-5 sm:p-6 shadow-[0_12px_36px_-10px_rgba(15,23,42,0.08)]">
+                <!-- Ambient Subtle Gradient Backdrop Glow -->
+                <div class="absolute -right-12 -top-12 w-64 h-64 bg-gradient-to-br from-indigo-500/15 via-purple-500/10 to-pink-500/15 rounded-full blur-2xl pointer-events-none"></div>
+                <div class="absolute -left-12 -bottom-12 w-48 h-48 bg-gradient-to-tr from-blue-500/10 to-indigo-500/10 rounded-full blur-xl pointer-events-none"></div>
+
+                <div class="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+                    <!-- Left Column: Icon, Badges, Title & Subtitle -->
+                    <div class="flex items-start gap-4">
+                        <!-- Lightning Gradient Icon Body -->
+                        <div class="w-13 h-13 sm:w-14 sm:h-14 rounded-2xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 text-white flex items-center justify-center shrink-0 shadow-lg shadow-indigo-500/25 ring-4 ring-indigo-50">
+                            <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                        </div>
+
+                        <div>
+                            <!-- Header Badges Row -->
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-50 border border-rose-200/80 text-rose-600 shadow-xs">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+                                    <span>Limited-Time Offer</span>
+                                </span>
+
+                                <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-black bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-xs" x-text="currentSale.badge_text">
+                                </span>
+
+                                <template x-if="currentSale.category_name">
+                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200/60" x-text="currentSale.category_name"></span>
+                                </template>
+                            </div>
+
+                            <!-- Prominent Flash Sale Title -->
+                            <h2 class="text-lg sm:text-xl font-black text-slate-900 tracking-tight mt-1.5 flex items-center gap-2" x-text="currentSale.title">
+                            </h2>
+
+                            <!-- Subtitle / Value Pitch -->
+                            <p class="text-xs text-slate-500 mt-0.5 max-w-xl leading-relaxed" x-text="currentSale.subtitle || 'Massive limited-time price drops on high-quality engagement services. Grab deals before time runs out!'">
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Right Column: Live Countdown Box + Action Button -->
+                    <div class="flex flex-col sm:flex-row items-start sm:items-center lg:items-end justify-between sm:justify-end gap-3.5 pt-3 lg:pt-0 border-t lg:border-t-0 border-slate-100">
+                        <!-- Live Interactive Countdown Timer -->
+                        <div class="flex flex-col items-start sm:items-end">
+                            <span class="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block mb-1">Sale Ends In</span>
+                            <div class="flex items-center gap-1.5">
+                                <!-- Hours Box -->
+                                <div class="flex flex-col items-center bg-slate-900 text-white px-2.5 py-1.5 rounded-xl min-w-[42px] shadow-xs">
+                                    <span class="text-sm font-black font-mono leading-none" x-text="pad(hours)">00</span>
+                                    <span class="text-[8px] font-bold uppercase text-slate-400 tracking-wider mt-0.5">HRS</span>
+                                </div>
+                                <span class="text-slate-400 font-black text-sm">:</span>
+                                <!-- Minutes Box -->
+                                <div class="flex flex-col items-center bg-slate-900 text-white px-2.5 py-1.5 rounded-xl min-w-[42px] shadow-xs">
+                                    <span class="text-sm font-black font-mono leading-none" x-text="pad(minutes)">00</span>
+                                    <span class="text-[8px] font-bold uppercase text-slate-400 tracking-wider mt-0.5">MIN</span>
+                                </div>
+                                <span class="text-slate-400 font-black text-sm">:</span>
+                                <!-- Seconds Box -->
+                                <div class="flex flex-col items-center bg-gradient-to-b from-rose-600 to-rose-700 text-white px-2.5 py-1.5 rounded-xl min-w-[42px] shadow-xs">
+                                    <span class="text-sm font-black font-mono leading-none" x-text="pad(seconds)">00</span>
+                                    <span class="text-[8px] font-bold uppercase text-rose-200 tracking-wider mt-0.5">SEC</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- View Deals Button -->
+                        <div class="flex items-center gap-2 w-full sm:w-auto">
+                            <a :href="'/user/services.php?sale_id=' + currentSale.id" 
+                               class="w-full sm:w-auto px-5 py-3 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-extrabold text-xs shadow-lg shadow-indigo-500/25 flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98] transition-all group">
+                                <span>View Deals</span>
+                                <svg class="w-4 h-4 text-white group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                                </svg>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Multiple Sales Indicator Dots / Tabs (if > 1 sale exists) -->
+                <template x-if="sales.length > 1">
+                    <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+                        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                            Deal <span x-text="currentIndex + 1"></span> of <span x-text="sales.length"></span>
+                        </span>
+                        <div class="flex items-center gap-1.5">
+                            <template x-for="(s, idx) in sales" :key="s.id">
+                                <button type="button" 
+                                        @click="selectSale(idx)"
+                                        :class="currentIndex === idx ? 'w-6 bg-blue-600' : 'w-2 bg-slate-200 hover:bg-slate-300'"
+                                        class="h-2 rounded-full transition-all duration-200"
+                                        :title="s.title">
+                                </button>
+                            </template>
+                        </div>
+                    </div>
+                </template>
             </div>
-            <div>
-                <span class="text-sm font-black text-slate-900 tracking-tight leading-none block"><?= e(app_name()) ?></span>
-                <span class="text-[10px] font-medium text-slate-400 tracking-tight leading-none mt-0.5 block"><?= e(app_tagline()) ?></span>
-            </div>
-        </div>
+        </template>
 
-        <!-- Right: Quick Access Header & Clean Icons -->
-        <div class="flex flex-col sm:items-end items-center gap-1">
-            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Quick Access</span>
-            <div class="flex items-center gap-1.5 sm:gap-2">
-                <!-- Home (Active Blue Pill) -->
-                <a href="/user/dashboard.php" class="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm shadow-blue-500/30" title="Home">
-                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                        <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
-                    </svg>
-                </a>
-
-                <!-- Services -->
-                <a href="/user/services.php" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors" title="Services">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-                    </svg>
-                </a>
-
-                <!-- Orders -->
-                <a href="/user/orders.php" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors" title="My Orders">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                    </svg>
-                </a>
-
-                <!-- Add Funds / Wallet -->
-                <a href="/user/add-funds.php" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors" title="Add Funds">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                    </svg>
-                </a>
-
-                <!-- Profile -->
-                <a href="/user/profile.php" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors" title="Account Settings">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
+        <template x-if="sales.length === 0">
+            <!-- Graceful Placeholder Banner when No Flash Sale is Currently Running -->
+            <div class="bg-white/90 backdrop-blur-xl border border-white/90 rounded-3xl p-5 sm:p-6 shadow-[0_10px_35px_-10px_rgba(15,23,42,0.07)] flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div class="flex items-center gap-3.5">
+                    <div class="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-100 text-amber-600 flex items-center justify-center shrink-0 shadow-xs text-xl">
+                        <svg class="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h3 class="text-sm font-black text-slate-900 tracking-tight">Flash Sale Portal</h3>
+                            <span class="text-[10px] font-extrabold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100">Next Drop Soon</span>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-0.5">Stay tuned! Limited-time discounts and flash promotions drop frequently on top services.</p>
+                    </div>
+                </div>
+                <a href="/user/services.php" class="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs transition-colors shrink-0">
+                    Browse All Services
                 </a>
             </div>
-        </div>
+        </template>
     </div>
 </div>
 
@@ -607,7 +660,55 @@ function userAnnouncementPopup(data) {
         }
     };
 }
-</script>
 <?php endif; ?>
+
+<script>
+/**
+ * Dashboard Flash Sale Section Controller
+ * Provides dynamic multi-deal switching and real-time live countdown ticking
+ */
+function dashboardFlashSaleSection(sales) {
+    return {
+        sales: sales || [],
+        currentIndex: 0,
+        hours: 0,
+        minutes: 0,
+        seconds: 0,
+        timer: null,
+
+        get currentSale() {
+            return this.sales[this.currentIndex] || {};
+        },
+
+        init() {
+            if (this.sales.length > 0) {
+                this.updateCountdown();
+                this.timer = setInterval(() => {
+                    this.updateCountdown();
+                }, 1000);
+            }
+        },
+
+        selectSale(idx) {
+            this.currentIndex = idx;
+            this.updateCountdown();
+        },
+
+        updateCountdown() {
+            if (!this.currentSale || !this.currentSale.ends_at) return;
+            const target = new Date(this.currentSale.ends_at.replace(' ', 'T')).getTime();
+            const now = new Date().getTime();
+            const diff = Math.max(0, Math.floor((target - now) / 1000));
+            this.hours = Math.floor(diff / 3600);
+            this.minutes = Math.floor((diff % 3600) / 60);
+            this.seconds = diff % 60;
+        },
+
+        pad(n) {
+            return String(n).padStart(2, '0');
+        }
+    };
+}
+</script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>
