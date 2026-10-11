@@ -365,7 +365,7 @@ class SpinWheelEngine {
      * 7. Records transactions and spin ledger entry
      * 8. Returns authoritative result
      */
-    public static function executeSpin(int $userId, int $betId): array {
+    public static function executeSpin(int $userId, int $betId, ?string $requestUuid = null): array {
         self::ensureTablesExist();
 
         if (!self::isEnabled()) {
@@ -373,6 +373,36 @@ class SpinWheelEngine {
         }
 
         $db = Database::getConnection();
+
+        // Idempotency Protection: If this request UUID was already processed for this user, return existing record
+        if ($requestUuid !== null && trim($requestUuid) !== '') {
+            $safeUuid = substr(trim($requestUuid), 0, 64);
+            $checkStmt = $db->prepare("SELECT * FROM spin_spins WHERE uuid = :uuid AND user_id = :uid LIMIT 1");
+            $checkStmt->execute(['uuid' => $safeUuid, 'uid' => $userId]);
+            $existing = $checkStmt->fetch();
+            if ($existing) {
+                $balStmt = $db->prepare("SELECT balance FROM users WHERE id = :id");
+                $balStmt->execute(['id' => $userId]);
+                $userBal = (float)$balStmt->fetchColumn();
+
+                return [
+                    'success'           => true,
+                    'spin_id'           => (int)$existing['id'],
+                    'uuid'              => $existing['uuid'],
+                    'segment_index'     => (int)$existing['segment_index'],
+                    'target_angle'      => (float)$existing['final_angle'],
+                    'reward_type'       => $existing['reward_type'],
+                    'outcome_label'     => $existing['outcome_label'],
+                    'reward_amount'     => (float)$existing['reward_amount'],
+                    'formatted_reward'  => format_currency((float)$existing['reward_amount']),
+                    'deducted_balance'  => $userBal,
+                    'formatted_deducted_balance' => format_currency($userBal),
+                    'new_balance'       => $userBal,
+                    'formatted_balance' => format_currency($userBal),
+                    'is_retried'        => true
+                ];
+            }
+        }
 
         // Check recent cooldown to prevent accidental rapid double-clicks
         $cooldownSec = (int)get_setting('spin_wheel_cooldown_seconds', '2');
@@ -452,7 +482,9 @@ class SpinWheelEngine {
             }
 
             // Generate unique transaction UUID
-            $spinUuid = 'spn_' . bin2hex(random_bytes(10));
+            $spinUuid = ($requestUuid !== null && trim($requestUuid) !== '') 
+                ? substr(trim($requestUuid), 0, 64) 
+                : ('spn_' . bin2hex(random_bytes(10)));
 
             // Record Debit Transaction
             $txnBetStmt = $db->prepare("
@@ -587,6 +619,10 @@ class SpinWheelEngine {
                 'outcome_label'     => $outcomeLabel,
                 'reward_amount'     => $rewardAmount,
                 'formatted_reward'  => format_currency($rewardAmount),
+                'bet_amount'        => $betAmount,
+                'formatted_bet'     => format_currency($betAmount),
+                'deducted_balance'  => $currentBalance - $betAmount,
+                'formatted_deducted_balance' => format_currency($currentBalance - $betAmount),
                 'new_balance'       => $newBalance,
                 'formatted_balance' => format_currency($newBalance)
             ];

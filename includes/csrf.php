@@ -14,6 +14,10 @@ class CSRF {
         return $_SESSION['csrf_token'];
     }
 
+    public static function generate(): string {
+        return self::getToken();
+    }
+
     public static function validate(?string $token): bool {
         if (empty($_SESSION['csrf_token']) || empty($token)) {
             return false;

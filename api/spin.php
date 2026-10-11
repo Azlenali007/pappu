@@ -89,8 +89,16 @@ try {
                 exit;
             }
 
-            // CSRF Verification
-            CSRF::verifyOrAbort();
+            // CSRF Verification with JSON response
+            $csrfToken = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+            if (!CSRF::validate($csrfToken)) {
+                http_response_code(403);
+                echo json_encode([
+                    'success' => false,
+                    'error' => 'Security token expired. Please refresh the page and try again.'
+                ]);
+                exit;
+            }
 
             $betId = (int)($_POST['bet_id'] ?? 0);
             if ($betId <= 0) {
@@ -98,7 +106,8 @@ try {
                 exit;
             }
 
-            $spinResult = SpinWheelEngine::executeSpin($userId, $betId);
+            $requestId = trim((string)($_POST['request_id'] ?? ''));
+            $spinResult = SpinWheelEngine::executeSpin($userId, $betId, $requestId !== '' ? $requestId : null);
             echo json_encode($spinResult);
             exit;
 

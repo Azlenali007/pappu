@@ -9,8 +9,8 @@
  * - Distinct, attractive segment colors with clearly visible borders
  * - Both amount and label displayed together in Jackpot segment (e.g. "₹30 JACKPOT")
  * - Fixed top indicator pointer aligned to 12 o'clock
- * - Central branded SPIN button with loading states
- * - Administrator-configured bet amount selector (₹1, ₹5, etc.)
+ * - Central branded SPIN button with loading & balance-check states
+ * - Administrator-configured bet amount selector (₹1, ₹5, etc.) with active pill highlight
  * - Native smooth RAF animation with quintic deceleration curve
  * - Authoritative server-side validation & CSPRNG before animation initiates
  * - SweetAlert2 popups for Jackpot, Cash Reward, Money Back, and Try Again
@@ -182,7 +182,7 @@ require_once __DIR__ . '/../includes/header.php';
                                 $angle = $i * (360 / 24);
                             ?>
                                 <div class="absolute w-2 h-2 rounded-full bg-amber-300 shadow-[0_0_6px_rgba(251,191,36,0.9)] border border-amber-100/80"
-                                     style="transform: rotate(<?= $angle ?>deg) translateY(-<?= ($i % 2 === 0) ? '154' : '154' ?>px);"></div>
+                                     style="transform: rotate(<?= $angle ?>deg) translateY(-154px);"></div>
                             <?php endfor; ?>
                         </div>
                     </div>
@@ -200,9 +200,11 @@ require_once __DIR__ . '/../includes/header.php';
 
                 <!-- Rotatable Wheel SVG Canvas Container -->
                 <div id="wheelCanvasWrapper"
+                     style="transform-origin: center center; -webkit-transform-origin: center center;"
                      class="w-[288px] h-[288px] sm:w-[388px] sm:h-[388px] rounded-full overflow-hidden relative z-10 will-change-transform">
                     <svg id="wheelSvg"
                          viewBox="0 0 400 400"
+                         style="transform-origin: center center; -webkit-transform-origin: center center;"
                          class="w-full h-full transform-gpu"
                          xmlns="http://www.w3.org/2000/svg">
                         <!-- Segments pre-rendered on the server for instant zero-flicker display -->
@@ -319,8 +321,9 @@ require_once __DIR__ . '/../includes/header.php';
 
 <!-- Pass CSRF Token and Pre-Loaded Configurations to JavaScript -->
 <script>
-    window.SPIN_CSRF_TOKEN = '<?= CSRF::generate() ?>';
+    window.SPIN_CSRF_TOKEN = '<?= CSRF::getToken() ?>';
     window.INITIAL_BET_ID = <?= (int)($defaultBet ? $defaultBet['id'] : 0) ?>;
+    window.INITIAL_BET_AMOUNT = <?= (float)($defaultBet ? $defaultBet['bet_amount'] : 1.0) ?>;
     window.INITIAL_USER_BALANCE = <?= (float)$user['balance'] ?>;
     window.ACTIVE_BETS_CONFIG = <?= json_encode($allActiveConfigs, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
 </script>
@@ -328,10 +331,11 @@ require_once __DIR__ . '/../includes/header.php';
 <!-- Spin Wheel Client Engine Scripts -->
 <script>
 (function() {
-    let currentBetId = window.INITIAL_BET_ID;
+    let currentBetId = window.INITIAL_BET_ID || 0;
+    let currentBetAmount = window.INITIAL_BET_AMOUNT || 1.0;
+    let currentUserBalance = window.INITIAL_USER_BALANCE || 0.0;
     let isSpinning = false;
     let currentRotation = 0;
-    let currentBetAmount = 1;
 
     const wheelSvgGroup = document.getElementById('wheelSegmentsGroup');
     const spinBtn = document.getElementById('spinActionBtn');
@@ -350,6 +354,18 @@ require_once __DIR__ . '/../includes/header.php';
         'sparkles': 'M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z',
         'cross': 'M6 18L18 6M6 6l12 12'
     };
+
+    // Update spin button styling based on wallet balance vs current bet
+    function updateSpinButtonState() {
+        if (!spinBtn || isSpinning) return;
+        if (currentUserBalance < currentBetAmount) {
+            spinBtn.classList.add('opacity-70');
+            spinBtn.setAttribute('title', 'Insufficient wallet balance for this bet');
+        } else {
+            spinBtn.classList.remove('opacity-70');
+            spinBtn.removeAttribute('title');
+        }
+    }
 
     // Client-side dynamic wheel segment renderer using W3C SVG DOM methods (no innerHTML bugs)
     function renderWheelSegments(segments) {
@@ -515,15 +531,16 @@ require_once __DIR__ . '/../includes/header.php';
         });
     }
 
-    // Switch Bet Amount Selector (Instant cache swap with fresh server sync)
+    // Switch Bet Amount Selector (Visible highlight, instant cost label update & cached wheel swap)
     window.selectSpinBet = async function(betId, amount) {
         if (isSpinning) return;
-        currentBetId = betId;
-        currentBetAmount = amount;
+        currentBetId = parseInt(betId, 10);
+        currentBetAmount = parseFloat(amount);
 
+        // Immediate visual highlight update on bet buttons
         document.querySelectorAll('.bet-pill').forEach(btn => {
             const btnId = parseInt(btn.getAttribute('data-bet-id'), 10);
-            if (btnId === betId) {
+            if (btnId === currentBetId) {
                 btn.className = 'bet-pill px-5 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25 active-bet';
             } else {
                 btn.className = 'bet-pill px-5 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer text-slate-600 hover:text-slate-900 hover:bg-white/60';
@@ -531,22 +548,32 @@ require_once __DIR__ . '/../includes/header.php';
         });
 
         // Instant render from preloaded configs if available
-        if (window.ACTIVE_BETS_CONFIG && window.ACTIVE_BETS_CONFIG[betId]) {
-            const cachedConfig = window.ACTIVE_BETS_CONFIG[betId];
+        if (window.ACTIVE_BETS_CONFIG && window.ACTIVE_BETS_CONFIG[currentBetId]) {
+            const cachedConfig = window.ACTIVE_BETS_CONFIG[currentBetId];
             renderWheelSegments(cachedConfig.segments || []);
-            if (costLabel) costLabel.textContent = cachedConfig.formatted_bet;
+            if (costLabel && cachedConfig.formatted_bet) {
+                costLabel.textContent = cachedConfig.formatted_bet;
+            }
         }
 
-        // Fresh sync with server endpoint
+        updateSpinButtonState();
+
+        // Fresh sync with server endpoint to ensure fresh state
         try {
-            const res = await fetch(`/api/spin.php?action=get_config&bet_id=${betId}`);
+            const res = await fetch(`/api/spin.php?action=get_config&bet_id=${currentBetId}`);
             const data = await res.json();
             if (data.success && data.wheel_config) {
                 renderWheelSegments(data.wheel_config.segments || []);
-                if (costLabel) costLabel.textContent = data.wheel_config.formatted_bet;
+                if (costLabel && data.wheel_config.formatted_bet) {
+                    costLabel.textContent = data.wheel_config.formatted_bet;
+                }
                 if (balanceDisplay && data.formatted_balance) {
                     balanceDisplay.textContent = data.formatted_balance;
                 }
+                if (data.user_balance !== undefined) {
+                    currentUserBalance = parseFloat(data.user_balance);
+                }
+                updateSpinButtonState();
             } else if (data.error) {
                 if (typeof Swal !== 'undefined') {
                     Swal.fire({
@@ -565,16 +592,55 @@ require_once __DIR__ . '/../includes/header.php';
     window.initiateSpin = async function() {
         if (isSpinning) return;
 
-        // Button Loading State
+        // Validation 1: Bet selected
+        if (!currentBetId || currentBetId <= 0) {
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Select a Bet',
+                    text: 'Please select a spin amount before spinning.'
+                });
+            }
+            return;
+        }
+
+        // Validation 2: Client pre-check for insufficient balance
+        if (currentUserBalance < currentBetAmount) {
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Insufficient Balance',
+                    text: 'Your current balance is ' + (balanceDisplay ? balanceDisplay.textContent : 'low') + ', but this spin costs ' + (costLabel ? costLabel.textContent : '₹' + currentBetAmount) + '. Please add funds to spin!',
+                    confirmButtonColor: '#2563eb',
+                    confirmButtonText: 'Add Funds Now',
+                    showCancelButton: true,
+                    cancelButtonText: 'Cancel'
+                }).then((res) => {
+                    if (res.isConfirmed) {
+                        window.location.href = '/user/add-funds.php';
+                    }
+                });
+            } else {
+                alert('Insufficient wallet balance. Please add funds to spin!');
+            }
+            return;
+        }
+
+        // Button Loading State & Concurrency Lock
         isSpinning = true;
         spinBtn.disabled = true;
         spinBtnText.textContent = '...';
         spinBtn.classList.add('opacity-75', 'cursor-not-allowed');
 
+        // Generate unique client idempotency token for this spin request
+        const clientRequestId = 'spn_req_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+
         try {
             const formData = new FormData();
             formData.append('csrf_token', window.SPIN_CSRF_TOKEN);
             formData.append('bet_id', currentBetId);
+            formData.append('action', 'spin');
+            formData.append('request_id', clientRequestId);
 
             const response = await fetch('/api/spin.php?action=spin', {
                 method: 'POST',
@@ -588,6 +654,7 @@ require_once __DIR__ . '/../includes/header.php';
                 spinBtn.disabled = false;
                 spinBtnText.textContent = 'SPIN';
                 spinBtn.classList.remove('opacity-75', 'cursor-not-allowed');
+                updateSpinButtonState();
 
                 if (typeof Swal !== 'undefined') {
                     Swal.fire({
@@ -607,17 +674,28 @@ require_once __DIR__ . '/../includes/header.php';
                 return;
             }
 
-            // Immediately update displayed balance after verified transaction
-            if (balanceDisplay && data.formatted_balance) {
-                balanceDisplay.textContent = data.formatted_balance;
+            // Step 4 of sequence: Immediately update displayed balance to deduct bet amount (e.g. ₹100 - ₹5 = ₹95)
+            if (balanceDisplay && (data.formatted_deducted_balance || data.deducted_balance !== undefined)) {
+                balanceDisplay.textContent = data.formatted_deducted_balance;
+            } else if (data.bet_amount) {
+                currentUserBalance = Math.max(0, currentUserBalance - data.bet_amount);
             }
 
-            // Execute Native Smooth Physics Animation to Authoritative Target Angle
+            // Step 7 of sequence: Execute Native Smooth Physics Animation to Authoritative Target Angle
             animateWheelToAngle(data.target_angle, () => {
                 isSpinning = false;
                 spinBtn.disabled = false;
                 spinBtnText.textContent = 'SPIN';
                 spinBtn.classList.remove('opacity-75', 'cursor-not-allowed');
+
+                // Step 8 & 9 of sequence: Update to final wallet balance and show SweetAlert2 result popup
+                if (data.new_balance !== undefined) {
+                    currentUserBalance = parseFloat(data.new_balance);
+                }
+                if (balanceDisplay && data.formatted_balance) {
+                    balanceDisplay.textContent = data.formatted_balance;
+                }
+                updateSpinButtonState();
 
                 // Display Result Modal via SweetAlert2
                 displayResultPopup(data);
@@ -632,6 +710,7 @@ require_once __DIR__ . '/../includes/header.php';
             spinBtn.disabled = false;
             spinBtnText.textContent = 'SPIN';
             spinBtn.classList.remove('opacity-75', 'cursor-not-allowed');
+            updateSpinButtonState();
 
             if (typeof Swal !== 'undefined') {
                 Swal.fire({
@@ -653,6 +732,7 @@ require_once __DIR__ . '/../includes/header.php';
         if (prefersReducedMotion) {
             currentRotation = (Math.floor(currentRotation / 360) * 360) + targetAngleDeg;
             wheelWrapper.style.transform = `rotate(${currentRotation}deg)`;
+            wheelWrapper.style.webkitTransform = `rotate(${currentRotation}deg)`;
             setTimeout(onComplete, 200);
             return;
         }
@@ -682,12 +762,14 @@ require_once __DIR__ . '/../includes/header.php';
 
             const angleNow = startAngle + (totalDistance * easedProgress);
             wheelWrapper.style.transform = `rotate(${angleNow}deg)`;
+            wheelWrapper.style.webkitTransform = `rotate(${angleNow}deg)`;
 
             if (progress < 1) {
                 requestAnimationFrame(frame);
             } else {
                 currentRotation = finalAngle;
                 wheelWrapper.style.transform = `rotate(${finalAngle}deg)`;
+                wheelWrapper.style.webkitTransform = `rotate(${finalAngle}deg)`;
                 setTimeout(onComplete, 300);
             }
         }
@@ -836,6 +918,28 @@ require_once __DIR__ . '/../includes/header.php';
             console.error('Failed to refresh winners:', err);
         }
     }
+
+    // Direct event listeners for maximum reliability across browsers and touch screens
+    if (spinBtn) {
+        spinBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            window.initiateSpin();
+        });
+    }
+
+    document.querySelectorAll('.bet-pill').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            const bId = parseInt(this.getAttribute('data-bet-id'), 10);
+            const bAmt = parseFloat(this.getAttribute('data-bet-amount') || '1');
+            if (bId > 0) {
+                window.selectSpinBet(bId, bAmt);
+            }
+        });
+    });
+
+    // Initialize button state
+    updateSpinButtonState();
+
 })();
 </script>
 
