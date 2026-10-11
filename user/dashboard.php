@@ -119,7 +119,7 @@ if (SpinWheelEngine::isEnabled()) {
     $carouselCards[] = [
         'id' => 'spin-win',
         'title' => 'Spin & Win',
-        'subtitle' => 'Spin the wheel for instant cash & jackpots',
+        'subtitle' => 'Try your luck',
         'badge' => 'Instant Rewards',
         'icon' => '🎡',
         'bgClass' => 'from-purple-600 via-indigo-600 to-pink-600',
@@ -251,8 +251,11 @@ require_once __DIR__ . '/../includes/header.php';
 
                         <!-- 5. Spin & Win Wheel Icon -->
                         <template x-if="item.id === 'spin-win'">
-                            <svg class="w-7 h-7 sm:w-8 sm:h-8 text-white drop-shadow-xs" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            <svg class="w-7 h-7 sm:w-8 sm:h-8 text-white drop-shadow-md" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="9" stroke-width="2"/>
+                                <circle cx="12" cy="12" r="2.5" stroke-width="2"/>
+                                <path stroke-width="1.75" stroke-linecap="round" d="M12 3v6.5M12 14.5V21M3 12h6.5M14.5 12H21M5.636 5.636l4.596 4.596M13.768 13.768l4.596 4.596M18.364 5.636l-4.596 4.596M10.232 13.768l-4.596 4.596"/>
+                                <polygon points="12,1 10,4.5 14,4.5" fill="currentColor"/>
                             </svg>
                         </template>
 

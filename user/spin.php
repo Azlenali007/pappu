@@ -1,17 +1,20 @@
 <?php
 /**
- * User Spin Wheel Page
+ * User Spin & Win Page
  * SMM Panel - PHP 8.3+
  *
  * Fully integrated user-facing Spin Wheel with:
- * - Dynamic SVG-rendered wheel with responsive segments
- * - Fixed indicator pointer at top
- * - Central branded SPIN button with live state handling
- * - Bet amount selector (₹1, ₹5, etc.)
- * - Native smooth RAF animation with authentic physics & deceleration
- * - Atomic server validation before animation initiates
- * - SweetAlert2 popup handling for Jackpots, Cash Rewards, Money Back, and Try Again
- * - Real live Recent Winners board underneath
+ * - Server-side pre-rendered SVG segments (Instant zero-flicker display, never blank)
+ * - Dynamic SVG re-rendering on bet tier switch via W3C compliant DOM methods
+ * - Distinct, attractive segment colors with clearly visible borders
+ * - Both amount and label displayed together in Jackpot segment (e.g. "₹30 JACKPOT")
+ * - Fixed top indicator pointer aligned to 12 o'clock
+ * - Central branded SPIN button with loading states
+ * - Administrator-configured bet amount selector (₹1, ₹5, etc.)
+ * - Native smooth RAF animation with quintic deceleration curve
+ * - Authoritative server-side validation & CSPRNG before animation initiates
+ * - SweetAlert2 popups for Jackpot, Cash Reward, Money Back, and Try Again
+ * - Real live Recent Winners board from database with privacy-masked usernames
  */
 
 declare(strict_types=1);
@@ -32,14 +35,35 @@ $isWheelEnabled = SpinWheelEngine::isEnabled();
 $activeBets = SpinWheelEngine::getBets(true);
 $defaultBet = !empty($activeBets) ? $activeBets[0] : null;
 
-// Initial recent winners
+// Pre-fetch public configurations for all active bets for instant tab switching
+$allActiveConfigs = [];
+$defaultConfig = null;
+$configError = null;
+
+if (!empty($activeBets)) {
+    foreach ($activeBets as $b) {
+        $cfg = SpinWheelEngine::getPublicWheelConfig((int)$b['id']);
+        if (!isset($cfg['error'])) {
+            $allActiveConfigs[$b['id']] = $cfg;
+            if ($defaultBet && (int)$b['id'] === (int)$defaultBet['id']) {
+                $defaultConfig = $cfg;
+            }
+        }
+    }
+    if (!$defaultConfig && $defaultBet) {
+        $rawCfg = SpinWheelEngine::getPublicWheelConfig((int)$defaultBet['id']);
+        $configError = $rawCfg['error'] ?? 'Wheel configuration is undergoing administrator maintenance.';
+    }
+}
+
+// Initial recent winners from genuine completed winning spins
 $recentWinners = SpinWheelEngine::getRecentWinners(8);
 
 $pageTitle = "Spin & Win - " . app_name();
 require_once __DIR__ . '/../includes/header.php';
 ?>
 
-<!-- Ambient Floating Pastel Petals & Glows -->
+<!-- Ambient Floating Glows -->
 <div class="fixed inset-0 pointer-events-none overflow-hidden -z-10 select-none">
     <div class="absolute top-16 left-1/4 w-80 h-80 rounded-full bg-purple-200/25 blur-3xl"></div>
     <div class="absolute top-48 right-1/4 w-80 h-80 rounded-full bg-blue-200/20 blur-3xl"></div>
@@ -104,7 +128,18 @@ require_once __DIR__ . '/../includes/header.php';
             </div>
             <h2 class="text-xl font-black text-slate-900">Configuring Available Bets</h2>
             <p class="text-sm text-slate-500 max-w-md mx-auto">
-                No bet tiers are currently active. Please contact administrator support.
+                No bet amounts are currently active. Please contact administrator support.
+            </p>
+        </div>
+    <?php elseif ($configError): ?>
+        <!-- Configuration Maintenance State -->
+        <div class="bg-white rounded-3xl p-8 sm:p-12 border border-slate-200/80 shadow-xl text-center space-y-4">
+            <div class="w-16 h-16 rounded-2xl bg-amber-50 text-amber-500 border border-amber-200/60 flex items-center justify-center mx-auto">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <h2 class="text-xl font-black text-slate-900">Configuration Maintenance</h2>
+            <p class="text-sm text-slate-500 max-w-md mx-auto">
+                <?= e($configError) ?>
             </p>
         </div>
     <?php else: ?>
@@ -128,7 +163,7 @@ require_once __DIR__ . '/../includes/header.php';
                                 id="betBtn-<?= (int)$b['id'] ?>"
                                 data-bet-id="<?= (int)$b['id'] ?>"
                                 data-bet-amount="<?= (float)$b['bet_amount'] ?>"
-                                class="bet-pill px-5 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer <?= ($idx === 0) ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25 active-bet' : 'text-slate-600 hover:text-slate-900 hover:bg-white/60' ?>">
+                                class="bet-pill px-5 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer <?= ($defaultBet && (int)$b['id'] === (int)$defaultBet['id']) ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25 active-bet' : 'text-slate-600 hover:text-slate-900 hover:bg-white/60' ?>">
                             <?= format_currency($b['bet_amount']) ?>
                         </button>
                     <?php endforeach; ?>
@@ -138,20 +173,25 @@ require_once __DIR__ . '/../includes/header.php';
             <!-- Interactive Spin Wheel Stage -->
             <div class="relative w-[320px] h-[320px] sm:w-[420px] sm:h-[420px] max-w-full flex items-center justify-center my-2 select-none">
 
-                <!-- Outer Glowing Bezel Ring -->
-                <div class="absolute inset-0 rounded-full bg-gradient-to-tr from-amber-400 via-purple-500 to-blue-500 p-2 shadow-2xl shadow-indigo-500/20">
-                    <div class="w-full h-full rounded-full bg-slate-900 p-2 relative">
-                        <!-- Decorative Bezel Studs/LED lights around perimeter -->
+                <!-- Outer Glowing Bezel Ring with metallic border -->
+                <div class="absolute inset-0 rounded-full bg-gradient-to-tr from-amber-400 via-purple-600 to-blue-500 p-2.5 shadow-2xl shadow-indigo-500/25">
+                    <div class="w-full h-full rounded-full bg-slate-900 p-2 relative flex items-center justify-center">
+                        <!-- 24 Perimeter LED Studs for Authentic Wheel Atmosphere -->
                         <div class="absolute inset-0 flex items-center justify-center pointer-events-none" id="bezelLights">
-                            <!-- Injected by JS based on screen radius -->
+                            <?php for ($i = 0; $i < 24; $i++): 
+                                $angle = $i * (360 / 24);
+                            ?>
+                                <div class="absolute w-2 h-2 rounded-full bg-amber-300 shadow-[0_0_6px_rgba(251,191,36,0.9)] border border-amber-100/80"
+                                     style="transform: rotate(<?= $angle ?>deg) translateY(-<?= ($i % 2 === 0) ? '154' : '154' ?>px);"></div>
+                            <?php endfor; ?>
                         </div>
                     </div>
                 </div>
 
-                <!-- Fixed Top Indicator Pointer (Points directly downwards to top segment at 12 o'clock) -->
-                <div class="absolute -top-3 z-30 flex flex-col items-center pointer-events-none filter drop-shadow-lg">
+                <!-- Fixed Top Indicator Pointer (Points directly downwards to 12 o'clock) -->
+                <div class="absolute -top-3 z-30 flex flex-col items-center pointer-events-none filter drop-shadow-xl">
                     <div class="w-8 h-8 rounded-full bg-gradient-to-b from-amber-300 to-amber-500 border-2 border-white shadow-md flex items-center justify-center">
-                        <div class="w-3 h-3 rounded-full bg-amber-700"></div>
+                        <div class="w-3 h-3 rounded-full bg-amber-700 shadow-inner"></div>
                     </div>
                     <svg class="w-7 h-7 text-amber-500 -mt-2.5" viewBox="0 0 24 24" fill="currentColor">
                         <polygon points="12,22 4,6 20,6"/>
@@ -165,8 +205,12 @@ require_once __DIR__ . '/../includes/header.php';
                          viewBox="0 0 400 400"
                          class="w-full h-full transform-gpu"
                          xmlns="http://www.w3.org/2000/svg">
-                        <!-- Segments will be drawn dynamically via JS from verified public config -->
-                        <g id="wheelSegmentsGroup"></g>
+                        <!-- Segments pre-rendered on the server for instant zero-flicker display -->
+                        <g id="wheelSegmentsGroup">
+                            <?php if ($defaultConfig): ?>
+                                <?= SpinWheelEngine::renderWheelSegmentsSvg($defaultConfig) ?>
+                            <?php endif; ?>
+                        </g>
                     </svg>
                 </div>
 
@@ -273,11 +317,12 @@ require_once __DIR__ . '/../includes/header.php';
 
 </div>
 
-<!-- Pass CSRF Token and Initial Configuration to JavaScript -->
+<!-- Pass CSRF Token and Pre-Loaded Configurations to JavaScript -->
 <script>
     window.SPIN_CSRF_TOKEN = '<?= CSRF::generate() ?>';
     window.INITIAL_BET_ID = <?= (int)($defaultBet ? $defaultBet['id'] : 0) ?>;
     window.INITIAL_USER_BALANCE = <?= (float)$user['balance'] ?>;
+    window.ACTIVE_BETS_CONFIG = <?= json_encode($allActiveConfigs, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
 </script>
 
 <!-- Spin Wheel Client Engine Scripts -->
@@ -286,7 +331,6 @@ require_once __DIR__ . '/../includes/header.php';
     let currentBetId = window.INITIAL_BET_ID;
     let isSpinning = false;
     let currentRotation = 0;
-    let wheelSegments = [];
     let currentBetAmount = 1;
 
     const wheelSvgGroup = document.getElementById('wheelSegmentsGroup');
@@ -297,44 +341,17 @@ require_once __DIR__ . '/../includes/header.php';
     const wheelWrapper = document.getElementById('wheelCanvasWrapper');
     const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    // SVG Icon Paths dictionary matching server definition
+    // Standard W3C SVG Icon Paths Dictionary
     const SVG_ICONS = {
-        'trophy': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>',
-        'coin': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>',
-        'gift': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 8v13m0-13V4a2 2 0 10-4 0v4m4-4a2 2 0 114 0v4M4 8h16v4H4V8zm2 4v8a2 2 0 002 2h8a2 2 0 002-2v-8"/>',
-        'refresh': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>',
-        'sparkles': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>',
-        'cross': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12"/>'
+        'trophy': 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z',
+        'coin': 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
+        'gift': 'M12 8v13m0-13V4a2 2 0 10-4 0v4m4-4a2 2 0 114 0v4M4 8h16v4H4V8zm2 4v8a2 2 0 002 2h8a2 2 0 002-2v-8',
+        'refresh': 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15',
+        'sparkles': 'M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z',
+        'cross': 'M6 18L18 6M6 6l12 12'
     };
 
-    // Load Public Wheel Configuration for the selected bet
-    async function loadWheelConfig(betId) {
-        try {
-            const res = await fetch(`/api/spin.php?action=get_config&bet_id=${betId}`);
-            const data = await res.json();
-            if (data.success && data.wheel_config) {
-                wheelSegments = data.wheel_config.segments || [];
-                currentBetAmount = data.wheel_config.bet_amount;
-                renderWheelSegments(wheelSegments);
-                if (costLabel) costLabel.textContent = data.wheel_config.formatted_bet;
-                if (balanceDisplay && data.formatted_balance) {
-                    balanceDisplay.textContent = data.formatted_balance;
-                }
-            } else {
-                if (typeof Swal !== 'undefined') {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Configuration Error',
-                        text: data.error || 'Failed to load wheel configuration'
-                    });
-                }
-            }
-        } catch (err) {
-            console.error('Failed to load wheel configuration:', err);
-        }
-    }
-
-    // Render Wheel SVG Segments with Pie Wedges, Radial Labels, and Clean SVGs
+    // Client-side dynamic wheel segment renderer using W3C SVG DOM methods (no innerHTML bugs)
     function renderWheelSegments(segments) {
         if (!wheelSvgGroup) return;
         wheelSvgGroup.innerHTML = '';
@@ -344,7 +361,7 @@ require_once __DIR__ . '/../includes/header.php';
 
         const cx = 200;
         const cy = 200;
-        const r = 200;
+        const r = 196;
         const arcAngle = (2 * Math.PI) / count;
         const arcDeg = 360 / count;
 
@@ -352,65 +369,154 @@ require_once __DIR__ . '/../includes/header.php';
             const startAngle = i * arcAngle;
             const endAngle = (i + 1) * arcAngle;
 
-            // Compute SVG Path coordinates for segment wedge
-            const x1 = cx + r * Math.sin(startAngle);
-            const y1 = cy - r * Math.cos(startAngle);
-            const x2 = cx + r * Math.sin(endAngle);
-            const y2 = cy - r * Math.cos(endAngle);
+            const x1 = Math.round((cx + r * Math.sin(startAngle)) * 100) / 100;
+            const y1 = Math.round((cy - r * Math.cos(startAngle)) * 100) / 100;
+            const x2 = Math.round((cx + r * Math.sin(endAngle)) * 100) / 100;
+            const y2 = Math.round((cy - r * Math.cos(endAngle)) * 100) / 100;
             const largeArc = (endAngle - startAngle > Math.PI) ? 1 : 0;
 
             const pathD = `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
 
-            // Segment G element
             const segGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
             segGroup.setAttribute('class', 'wheel-segment');
+            segGroup.setAttribute('data-index', i);
 
-            // Wedge path
+            // Segment Pie Wedge Path
             const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             pathEl.setAttribute('d', pathD);
             pathEl.setAttribute('fill', seg.color_bg || '#3b82f6');
             pathEl.setAttribute('stroke', '#ffffff');
-            pathEl.setAttribute('stroke-width', '2');
+            pathEl.setAttribute('stroke-width', '1.75');
+            pathEl.setAttribute('stroke-linejoin', 'round');
             segGroup.appendChild(pathEl);
 
-            // Compute rotation for text & icon along center angle of segment
-            const midAngleDeg = (i * arcDeg) + (arcDeg / 2);
+            // Oriented container rotated along center axis of segment
+            const midAngleDeg = Math.round(((i * arcDeg) + (arcDeg / 2)) * 100) / 100;
+            const contentGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+            contentGroup.setAttribute('transform', `rotate(${midAngleDeg}, ${cx}, ${cy})`);
 
-            // Container for text/icon oriented radially
-            const textGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-            textGroup.setAttribute('transform', `rotate(${midAngleDeg}, ${cx}, ${cy})`);
-
-            // Text Label
-            const textEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            textEl.setAttribute('x', cx);
-            textEl.setAttribute('y', cy - (r * 0.62));
-            textEl.setAttribute('fill', seg.color_text || '#ffffff');
-            textEl.setAttribute('text-anchor', 'middle');
-            textEl.setAttribute('dominant-baseline', 'central');
-            textEl.setAttribute('font-family', 'Plus Jakarta Sans, sans-serif');
-            textEl.setAttribute('font-size', count > 8 ? '10' : '11.5');
-            textEl.setAttribute('font-weight', '800');
-            textEl.setAttribute('letter-spacing', '0.2px');
-            textEl.textContent = seg.label;
-            textGroup.appendChild(textEl);
-
-            // SVG Icon inside segment wedge
+            // Safe SVG Icon via createElementNS
             const iconKey = seg.icon_key || 'trophy';
             const iconPathD = SVG_ICONS[iconKey] || SVG_ICONS['trophy'];
-            const iconSvg = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-            iconSvg.setAttribute('transform', `translate(${cx - 9}, ${cy - (r * 0.82)}) scale(0.75)`);
-            iconSvg.setAttribute('stroke', seg.color_text || '#ffffff');
-            iconSvg.setAttribute('fill', 'none');
-            iconSvg.innerHTML = iconPathD;
-            textGroup.appendChild(iconSvg);
+            const iconSvgG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+            iconSvgG.setAttribute('transform', `translate(${cx - 8}, 26) scale(0.68)`);
+            iconSvgG.setAttribute('fill', 'none');
+            iconSvgG.setAttribute('stroke', seg.color_text || '#ffffff');
+            iconSvgG.setAttribute('stroke-width', '2');
+            iconSvgG.setAttribute('stroke-linecap', 'round');
+            iconSvgG.setAttribute('stroke-linejoin', 'round');
 
-            segGroup.appendChild(textGroup);
+            const iconPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            iconPathEl.setAttribute('d', iconPathD);
+            iconSvgG.appendChild(iconPathEl);
+            contentGroup.appendChild(iconSvgG);
+
+            // Text Elements (Jackpot, Reward, Money Back, No Reward)
+            const rType = seg.reward_type || 'reward';
+            const rewardAmt = parseFloat(seg.reward_amount || 0);
+
+            if (rType === 'jackpot') {
+                const textAmt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                textAmt.setAttribute('x', cx);
+                textAmt.setAttribute('y', '54');
+                textAmt.setAttribute('fill', '#fef08a');
+                textAmt.setAttribute('font-size', '14');
+                textAmt.setAttribute('font-weight', '900');
+                textAmt.setAttribute('text-anchor', 'middle');
+                textAmt.setAttribute('dominant-baseline', 'central');
+                textAmt.setAttribute('font-family', "'Plus Jakarta Sans', sans-serif");
+                textAmt.setAttribute('letter-spacing', '0.3px');
+                textAmt.textContent = seg.formatted_reward || (rewardAmt > 0 ? '₹' + rewardAmt : '');
+                contentGroup.appendChild(textAmt);
+
+                const textLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                textLabel.setAttribute('x', cx);
+                textLabel.setAttribute('y', '70');
+                textLabel.setAttribute('fill', '#fef08a');
+                textLabel.setAttribute('font-size', '9.5');
+                textLabel.setAttribute('font-weight', '900');
+                textLabel.setAttribute('text-anchor', 'middle');
+                textLabel.setAttribute('dominant-baseline', 'central');
+                textLabel.setAttribute('font-family', "'Plus Jakarta Sans', sans-serif");
+                textLabel.setAttribute('letter-spacing', '1.2px');
+                textLabel.textContent = 'JACKPOT';
+                contentGroup.appendChild(textLabel);
+            } else if (rType === 'reward') {
+                const textAmt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                textAmt.setAttribute('x', cx);
+                textAmt.setAttribute('y', '54');
+                textAmt.setAttribute('fill', seg.color_text || '#ffffff');
+                textAmt.setAttribute('font-size', '13.5');
+                textAmt.setAttribute('font-weight', '900');
+                textAmt.setAttribute('text-anchor', 'middle');
+                textAmt.setAttribute('dominant-baseline', 'central');
+                textAmt.setAttribute('font-family', "'Plus Jakarta Sans', sans-serif");
+                textAmt.setAttribute('letter-spacing', '0.2px');
+                textAmt.textContent = seg.formatted_reward || (rewardAmt > 0 ? '₹' + rewardAmt : '');
+                contentGroup.appendChild(textAmt);
+
+                const textLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                textLabel.setAttribute('x', cx);
+                textLabel.setAttribute('y', '69');
+                textLabel.setAttribute('fill', seg.color_text || '#ffffff');
+                textLabel.setAttribute('fill-opacity', '0.9');
+                textLabel.setAttribute('font-size', '9');
+                textLabel.setAttribute('font-weight', '800');
+                textLabel.setAttribute('text-anchor', 'middle');
+                textLabel.setAttribute('dominant-baseline', 'central');
+                textLabel.setAttribute('font-family', "'Plus Jakarta Sans', sans-serif");
+                textLabel.setAttribute('letter-spacing', '0.6px');
+                textLabel.textContent = 'REWARD';
+                contentGroup.appendChild(textLabel);
+            } else if (rType === 'money_back') {
+                const textAmt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                textAmt.setAttribute('x', cx);
+                textAmt.setAttribute('y', '53');
+                textAmt.setAttribute('fill', seg.color_text || '#ffffff');
+                textAmt.setAttribute('font-size', '12.5');
+                textAmt.setAttribute('font-weight', '900');
+                textAmt.setAttribute('text-anchor', 'middle');
+                textAmt.setAttribute('dominant-baseline', 'central');
+                textAmt.setAttribute('font-family', "'Plus Jakarta Sans', sans-serif");
+                textAmt.textContent = seg.formatted_reward || (rewardAmt > 0 ? '₹' + rewardAmt : '');
+                contentGroup.appendChild(textAmt);
+
+                const textLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                textLabel.setAttribute('x', cx);
+                textLabel.setAttribute('y', '68');
+                textLabel.setAttribute('fill', seg.color_text || '#ffffff');
+                textLabel.setAttribute('fill-opacity', '0.95');
+                textLabel.setAttribute('font-size', '8');
+                textLabel.setAttribute('font-weight', '800');
+                textLabel.setAttribute('text-anchor', 'middle');
+                textLabel.setAttribute('dominant-baseline', 'central');
+                textLabel.setAttribute('font-family', "'Plus Jakarta Sans', sans-serif");
+                textLabel.setAttribute('letter-spacing', '0.5px');
+                textLabel.textContent = 'MONEY BACK';
+                contentGroup.appendChild(textLabel);
+            } else {
+                const textLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                textLabel.setAttribute('x', cx);
+                textLabel.setAttribute('y', '58');
+                textLabel.setAttribute('fill', seg.color_text || '#ffffff');
+                textLabel.setAttribute('fill-opacity', '0.9');
+                textLabel.setAttribute('font-size', '9.5');
+                textLabel.setAttribute('font-weight', '800');
+                textLabel.setAttribute('text-anchor', 'middle');
+                textLabel.setAttribute('dominant-baseline', 'central');
+                textLabel.setAttribute('font-family', "'Plus Jakarta Sans', sans-serif");
+                textLabel.setAttribute('letter-spacing', '0.5px');
+                textLabel.textContent = seg.label || 'TRY AGAIN';
+                contentGroup.appendChild(textLabel);
+            }
+
+            segGroup.appendChild(contentGroup);
             wheelSvgGroup.appendChild(segGroup);
         });
     }
 
-    // Switch Bet Amount Selector
-    window.selectSpinBet = function(betId, amount) {
+    // Switch Bet Amount Selector (Instant cache swap with fresh server sync)
+    window.selectSpinBet = async function(betId, amount) {
         if (isSpinning) return;
         currentBetId = betId;
         currentBetAmount = amount;
@@ -424,10 +530,38 @@ require_once __DIR__ . '/../includes/header.php';
             }
         });
 
-        loadWheelConfig(betId);
+        // Instant render from preloaded configs if available
+        if (window.ACTIVE_BETS_CONFIG && window.ACTIVE_BETS_CONFIG[betId]) {
+            const cachedConfig = window.ACTIVE_BETS_CONFIG[betId];
+            renderWheelSegments(cachedConfig.segments || []);
+            if (costLabel) costLabel.textContent = cachedConfig.formatted_bet;
+        }
+
+        // Fresh sync with server endpoint
+        try {
+            const res = await fetch(`/api/spin.php?action=get_config&bet_id=${betId}`);
+            const data = await res.json();
+            if (data.success && data.wheel_config) {
+                renderWheelSegments(data.wheel_config.segments || []);
+                if (costLabel) costLabel.textContent = data.wheel_config.formatted_bet;
+                if (balanceDisplay && data.formatted_balance) {
+                    balanceDisplay.textContent = data.formatted_balance;
+                }
+            } else if (data.error) {
+                if (typeof Swal !== 'undefined') {
+                    Swal.fire({
+                        icon: 'info',
+                        title: 'Tier Notice',
+                        text: data.error
+                    });
+                }
+            }
+        } catch (err) {
+            console.error('Failed to sync bet configuration:', err);
+        }
     };
 
-    // Initiate Spin: Client requests server result FIRST, then smoothly animates to target
+    // Initiate Spin: Server determines result first, client animates to target
     window.initiateSpin = async function() {
         if (isSpinning) return;
 
@@ -458,7 +592,7 @@ require_once __DIR__ . '/../includes/header.php';
                 if (typeof Swal !== 'undefined') {
                     Swal.fire({
                         icon: data.insufficient_balance ? 'warning' : 'error',
-                        title: data.insufficient_balance ? 'Insufficient Balance' : 'Spin Failed',
+                        title: data.insufficient_balance ? 'Insufficient Funds' : 'Spin Notice',
                         text: data.error || 'Could not process spin.',
                         confirmButtonColor: '#2563eb',
                         confirmButtonText: data.insufficient_balance ? 'Add Funds Now' : 'OK'
@@ -473,20 +607,19 @@ require_once __DIR__ . '/../includes/header.php';
                 return;
             }
 
-            // Immediately update displayed balance to deduct bet amount
+            // Immediately update displayed balance after verified transaction
             if (balanceDisplay && data.formatted_balance) {
                 balanceDisplay.textContent = data.formatted_balance;
             }
 
             // Execute Native Smooth Physics Animation to Authoritative Target Angle
             animateWheelToAngle(data.target_angle, () => {
-                // Animation completed callback
                 isSpinning = false;
                 spinBtn.disabled = false;
                 spinBtnText.textContent = 'SPIN';
                 spinBtn.classList.remove('opacity-75', 'cursor-not-allowed');
 
-                // Display Polished SweetAlert2 Result Modal
+                // Display Result Modal via SweetAlert2
                 displayResultPopup(data);
 
                 // Refresh Recent Winners Board
@@ -510,7 +643,7 @@ require_once __DIR__ . '/../includes/header.php';
         }
     };
 
-    // Browser Native Smooth Wheel Animation with Easing Physics
+    // Smooth Wheel Animation with Natural Quintic Easing
     function animateWheelToAngle(targetAngleDeg, onComplete) {
         if (!wheelWrapper) {
             onComplete();
@@ -518,15 +651,14 @@ require_once __DIR__ . '/../includes/header.php';
         }
 
         if (prefersReducedMotion) {
-            // Respect reduced motion: instantly snap to target angle
             currentRotation = (Math.floor(currentRotation / 360) * 360) + targetAngleDeg;
             wheelWrapper.style.transform = `rotate(${currentRotation}deg)`;
             setTimeout(onComplete, 200);
             return;
         }
 
-        // Full rotations: 5 to 7 full 360-degree spins plus the target segment offset
-        const extraSpins = 360 * 6; // 2160 degrees
+        // 6 full 360-degree spins plus target segment offset
+        const extraSpins = 360 * 6;
         const currentNormalized = currentRotation % 360;
         let diff = (targetAngleDeg - currentNormalized);
         if (diff < 0) diff += 360;
@@ -535,7 +667,7 @@ require_once __DIR__ . '/../includes/header.php';
         const finalAngle = currentRotation + extraSpins + diff;
         const totalDistance = finalAngle - startAngle;
 
-        const duration = 4800; // 4.8 seconds authentic casino wheel spin
+        const duration = 4800; // 4.8 seconds authentic casino wheel experience
         const startTime = performance.now();
 
         // Custom Quintic Out Easing Curve: Rapid acceleration & smooth decelerating roll
@@ -568,7 +700,6 @@ require_once __DIR__ . '/../includes/header.php';
         if (typeof Swal === 'undefined') return;
 
         const rType = result.reward_type;
-        const label = result.outcome_label;
         const amtStr = result.formatted_reward;
         const balanceStr = result.formatted_balance;
 
@@ -704,11 +835,6 @@ require_once __DIR__ . '/../includes/header.php';
         } catch (err) {
             console.error('Failed to refresh winners:', err);
         }
-    }
-
-    // Initialize on page load
-    if (currentBetId > 0) {
-        loadWheelConfig(currentBetId);
     }
 })();
 </script>

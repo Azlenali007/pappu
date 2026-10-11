@@ -279,6 +279,81 @@ class SpinWheelEngine {
     }
 
     /**
+     * Pre-renders crisp SVG segments markup for instantaneous zero-flicker wheel display
+     */
+    public static function renderWheelSegmentsSvg(array $config): string {
+        $segments = $config['segments'] ?? [];
+        $count = count($segments);
+        if ($count === 0) return '';
+
+        $cx = 200;
+        $cy = 200;
+        $r = 196;
+        $arcAngle = (2 * M_PI) / $count;
+        $arcDeg = 360 / $count;
+
+        $iconPaths = [
+            'trophy'   => 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z',
+            'coin'     => 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
+            'gift'     => 'M12 8v13m0-13V4a2 2 0 10-4 0v4m4-4a2 2 0 114 0v4M4 8h16v4H4V8zm2 4v8a2 2 0 002 2h8a2 2 0 002-2v-8',
+            'refresh'  => 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15',
+            'sparkles' => 'M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z',
+            'cross'    => 'M6 18L18 6M6 6l12 12'
+        ];
+
+        $html = '';
+        foreach ($segments as $i => $seg) {
+            $startAngle = $i * $arcAngle;
+            $endAngle = ($i + 1) * $arcAngle;
+
+            $x1 = round($cx + $r * sin($startAngle), 2);
+            $y1 = round($cy - $r * cos($startAngle), 2);
+            $x2 = round($cx + $r * sin($endAngle), 2);
+            $y2 = round($cy - $r * cos($endAngle), 2);
+            $largeArc = ($endAngle - $startAngle > M_PI) ? 1 : 0;
+
+            $pathD = "M {$cx} {$cy} L {$x1} {$y1} A {$r} {$r} 0 {$largeArc} 1 {$x2} {$y2} Z";
+            $bg = htmlspecialchars($seg['color_bg'] ?? '#3b82f6', ENT_QUOTES, 'UTF-8');
+            $tx = htmlspecialchars($seg['color_text'] ?? '#ffffff', ENT_QUOTES, 'UTF-8');
+            $iconKey = $seg['icon_key'] ?? 'trophy';
+            $iconD = $iconPaths[$iconKey] ?? $iconPaths['trophy'];
+            $rType = $seg['reward_type'] ?? 'reward';
+            $amt = (float)($seg['reward_amount'] ?? 0);
+            $midAngleDeg = round(($i * $arcDeg) + ($arcDeg / 2), 2);
+
+            $html .= "<g class=\"wheel-segment\" data-index=\"{$i}\">";
+            $html .= "<path d=\"{$pathD}\" fill=\"{$bg}\" stroke=\"#ffffff\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>";
+            $html .= "<g transform=\"rotate({$midAngleDeg}, {$cx}, {$cy})\">";
+
+            // Icon at top perimeter
+            $html .= "<g transform=\"translate(" . ($cx - 8) . ", 26) scale(0.68)\" fill=\"none\" stroke=\"{$tx}\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">";
+            $html .= "<path d=\"{$iconD}\"/>";
+            $html .= "</g>";
+
+            // Text Labels inside segment
+            if ($rType === 'jackpot') {
+                $amtLabel = htmlspecialchars(format_currency($amt), ENT_QUOTES, 'UTF-8');
+                $html .= "<text x=\"{$cx}\" y=\"54\" fill=\"#fef08a\" font-size=\"14\" font-weight=\"900\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"'Plus Jakarta Sans', sans-serif\" letter-spacing=\"0.3px\">{$amtLabel}</text>";
+                $html .= "<text x=\"{$cx}\" y=\"70\" fill=\"#fef08a\" font-size=\"9.5\" font-weight=\"900\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"'Plus Jakarta Sans', sans-serif\" letter-spacing=\"1.2px\">JACKPOT</text>";
+            } elseif ($rType === 'reward') {
+                $amtLabel = htmlspecialchars(format_currency($amt), ENT_QUOTES, 'UTF-8');
+                $html .= "<text x=\"{$cx}\" y=\"54\" fill=\"{$tx}\" font-size=\"13.5\" font-weight=\"900\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"'Plus Jakarta Sans', sans-serif\" letter-spacing=\"0.2px\">{$amtLabel}</text>";
+                $html .= "<text x=\"{$cx}\" y=\"69\" fill=\"{$tx}\" fill-opacity=\"0.9\" font-size=\"9\" font-weight=\"800\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"'Plus Jakarta Sans', sans-serif\" letter-spacing=\"0.6px\">REWARD</text>";
+            } elseif ($rType === 'money_back') {
+                $amtLabel = htmlspecialchars(format_currency($amt), ENT_QUOTES, 'UTF-8');
+                $html .= "<text x=\"{$cx}\" y=\"53\" fill=\"{$tx}\" font-size=\"12.5\" font-weight=\"900\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"'Plus Jakarta Sans', sans-serif\">{$amtLabel}</text>";
+                $html .= "<text x=\"{$cx}\" y=\"68\" fill=\"{$tx}\" fill-opacity=\"0.95\" font-size=\"8\" font-weight=\"800\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"'Plus Jakarta Sans', sans-serif\" letter-spacing=\"0.5px\">MONEY BACK</text>";
+            } else {
+                $label = htmlspecialchars($seg['label'] ?? 'TRY AGAIN', ENT_QUOTES, 'UTF-8');
+                $html .= "<text x=\"{$cx}\" y=\"58\" fill=\"{$tx}\" fill-opacity=\"0.9\" font-size=\"9.5\" font-weight=\"800\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"'Plus Jakarta Sans', sans-serif\" letter-spacing=\"0.5px\">{$label}</text>";
+            }
+
+            $html .= "</g></g>";
+        }
+        return $html;
+    }
+
+    /**
      * Executes an Atomic Spin Transaction
      *
      * 1. Validates auth & eligibility
