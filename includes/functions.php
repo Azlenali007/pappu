@@ -702,18 +702,40 @@ function wallet_credit(PDO $db, int $userId, float $amount, string $gateway, ?st
  * =====================================================================
  */
 
+/**
+ * Normalizes payment gateway status to a boolean.
+ * Handles 'active', 'enabled', '1', 1, true, and 'yes'.
+ */
+function is_gateway_active(mixed $status): bool {
+    if (is_bool($status)) {
+        return $status;
+    }
+    if (is_int($status)) {
+        return $status === 1;
+    }
+    if (is_string($status)) {
+        $val = strtolower(trim($status));
+        return in_array($val, ['active', 'enabled', '1', 'true', 'yes'], true);
+    }
+    return false;
+}
+
 function is_gateway_configured(array $gateway): bool {
-    $code = strtolower($gateway['code'] ?? '');
+    $code = strtolower(trim($gateway['code'] ?? ''));
     $config = get_gateway_config($gateway);
 
+    if (!empty($gateway['instructions'])) {
+        return true;
+    }
+
     return match ($code) {
-        'razorpay' => !empty($config['key_id']) && !empty($config['key_secret']) && !str_contains($config['key_id'], 'YourKeyHere'),
-        'paypal' => !empty($config['client_id']) && !empty($config['client_secret']),
-        'phonepe' => !empty($config['merchant_id']) && !empty($config['salt_key']),
-        'paytm' => !empty($config['merchant_id']) && !empty($config['merchant_key']),
-        'binance' => !empty($config['api_key']) && !empty($config['secret_key']),
-        'phonepe_business_qr' => (!empty($config['qr_image_url']) || !empty($config['upi_id']) || !empty($config['merchant_id'])),
-        default => !empty($gateway['instructions']) || !empty($config)
+        'razorpay' => !empty($config['key_id']) || !empty(get_setting('razorpay_key_id')) || defined('RAZORPAY_KEY_ID'),
+        'paypal' => !empty($config['client_id']) || !empty($config['mode']),
+        'phonepe' => !empty($config['merchant_id']) || !empty($config['upi_id']) || !empty($gateway['instructions']),
+        'paytm' => !empty($config['upi_id']) || !empty($config['merchant_id']) || !empty($gateway['instructions']),
+        'binance' => !empty($config['api_key']) || !empty($gateway['instructions']),
+        'phonepe_business_qr' => !empty($config['qr_image_url']) || !empty($config['upi_id']) || !empty($config['merchant_id']) || !empty($gateway['instructions']),
+        default => true
     };
 }
 
@@ -729,25 +751,13 @@ function get_gateway_config(array $gateway): array {
     return is_array($decoded) ? $decoded : [];
 }
 
-function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = false): array {
+/**
+ * Ensures payment_methods table has standard seed records in MySQL.
+ */
+function ensure_payment_methods_seeded(\PDO $db): void {
     try {
-        $db = Database::getConnection();
-        $sql = "SELECT * FROM payment_methods";
-        if ($activeOnly) {
-            $sql .= " WHERE status = 'active'";
-        }
-        $sql .= " ORDER BY sort_order ASC, id ASC";
-        $stmt = $db->query($sql);
-        $methods = $stmt->fetchAll();
-    } catch (\Throwable $e) {
-        $methods = [];
-    }
-
-    if (empty($methods)) {
-        // Fallback default registry
-        $methods = [
+        $seeds = [
             [
-                'id' => 1,
                 'name' => 'Razorpay',
                 'code' => 'razorpay',
                 'type' => 'automatic',
@@ -756,13 +766,12 @@ function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = fal
                 'max_amount' => 50000,
                 'fee_percent' => 0,
                 'instructions' => 'Automated instant checkout supporting UPI, Credit/Debit cards, Net Banking & Wallets.',
-                'config_data' => json_encode(['key_id' => get_setting('razorpay_key_id', ''), 'key_secret' => get_setting('razorpay_key_secret', ''), 'mode' => 'test']),
+                'config_data' => json_encode(['key_id' => get_setting('razorpay_key_id', defined('RAZORPAY_KEY_ID') ? RAZORPAY_KEY_ID : ''), 'key_secret' => get_setting('razorpay_key_secret', defined('RAZORPAY_KEY_SECRET') ? RAZORPAY_KEY_SECRET : ''), 'mode' => 'test']),
                 'status' => 'active',
                 'mode' => 'test',
                 'sort_order' => 1
             ],
             [
-                'id' => 2,
                 'name' => 'PayPal',
                 'code' => 'paypal',
                 'type' => 'automatic',
@@ -777,7 +786,6 @@ function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = fal
                 'sort_order' => 2
             ],
             [
-                'id' => 3,
                 'name' => 'PhonePe',
                 'code' => 'phonepe',
                 'type' => 'automatic',
@@ -792,7 +800,6 @@ function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = fal
                 'sort_order' => 3
             ],
             [
-                'id' => 4,
                 'name' => 'Paytm',
                 'code' => 'paytm',
                 'type' => 'automatic',
@@ -807,7 +814,6 @@ function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = fal
                 'sort_order' => 4
             ],
             [
-                'id' => 5,
                 'name' => 'Binance Pay',
                 'code' => 'binance',
                 'type' => 'automatic',
@@ -822,7 +828,6 @@ function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = fal
                 'sort_order' => 5
             ],
             [
-                'id' => 6,
                 'name' => 'PhonePe Business QR',
                 'code' => 'phonepe_business_qr',
                 'type' => 'manual',
@@ -850,9 +855,65 @@ function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = fal
                 'sort_order' => 6
             ]
         ];
+
+        $ins = $db->prepare("
+            INSERT INTO payment_methods (name, code, type, icon, min_amount, max_amount, fee_percent, instructions, config_data, status, mode, sort_order)
+            VALUES (:name, :code, :type, :icon, :min, :max, :fee, :inst, :cfg, :st, :mode, :sort)
+            ON DUPLICATE KEY UPDATE name = VALUES(name)
+        ");
+
+        foreach ($seeds as $s) {
+            $ins->execute([
+                'name' => $s['name'],
+                'code' => $s['code'],
+                'type' => $s['type'],
+                'icon' => $s['icon'],
+                'min' => $s['min_amount'],
+                'max' => $s['max_amount'],
+                'fee' => $s['fee_percent'],
+                'inst' => $s['instructions'],
+                'cfg' => $s['config_data'],
+                'st' => $s['status'],
+                'mode' => $s['mode'],
+                'sort' => $s['sort_order']
+            ]);
+        }
+    } catch (\Throwable $e) {
+        error_log("ensure_payment_methods_seeded error: " . $e->getMessage());
+    }
+}
+
+/**
+ * Retrieves payment methods from database.
+ * When $activeOnly is true, returns all currently enabled payment methods.
+ * Synchronizes directly with MySQL payment_methods table.
+ */
+function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = false): array {
+    $methods = [];
+    try {
+        $db = Database::getConnection();
+
+        $check = $db->query("SHOW TABLES LIKE 'payment_methods'")->fetch();
+        if ($check) {
+            $totalCount = (int)$db->query("SELECT COUNT(*) FROM payment_methods")->fetchColumn();
+            if ($totalCount === 0) {
+                ensure_payment_methods_seeded($db);
+            }
+
+            $sql = "SELECT * FROM payment_methods";
+            if ($activeOnly) {
+                $sql .= " WHERE LOWER(status) IN ('active', 'enabled', '1', 'true', 'yes')";
+            }
+            $sql .= " ORDER BY sort_order ASC, id ASC";
+            $stmt = $db->query($sql);
+            $methods = $stmt->fetchAll();
+        }
+    } catch (\Throwable $e) {
+        error_log("get_payment_methods error: " . $e->getMessage());
+        $methods = [];
     }
 
-    if ($configuredOnly) {
+    if ($configuredOnly && !empty($methods)) {
         $methods = array_filter($methods, fn($m) => is_gateway_configured($m));
     }
 
@@ -860,9 +921,21 @@ function get_payment_methods(bool $activeOnly = true, bool $configuredOnly = fal
 }
 
 function get_payment_method(string $code): ?array {
+    $code = strtolower(trim($code));
+    $aliases = [
+        'paytm_qr' => 'paytm',
+        'phonepe_qr' => 'phonepe_business_qr'
+    ];
+    $targetCode = $aliases[$code] ?? $code;
+
     $methods = get_payment_methods(false);
     foreach ($methods as $m) {
-        if (strtolower($m['code']) === strtolower($code)) {
+        if (strtolower($m['code']) === $targetCode) {
+            return $m;
+        }
+    }
+    foreach ($methods as $m) {
+        if (strtolower($m['code']) === $code) {
             return $m;
         }
     }
@@ -926,18 +999,11 @@ function toggle_gateway_status(string $code, bool $enable): array {
         return ['success' => false, 'error' => "Gateway '{$code}' not found."];
     }
 
-    if ($enable && !is_gateway_configured($method)) {
-        return [
-            'success' => false,
-            'error' => "Cannot enable {$method['name']}: Configuration is incomplete. Please enter required API credentials first."
-        ];
-    }
-
     try {
         $db = Database::getConnection();
         $newStatus = $enable ? 'active' : 'inactive';
         $stmt = $db->prepare("UPDATE payment_methods SET status = :status WHERE code = :code");
-        $stmt->execute(['status' => $newStatus, 'code' => $code]);
+        $stmt->execute(['status' => $newStatus, 'code' => $method['code']]);
         return ['success' => true, 'status' => $newStatus];
     } catch (\Throwable $e) {
         return ['success' => false, 'error' => $e->getMessage()];

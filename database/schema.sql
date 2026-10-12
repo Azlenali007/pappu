@@ -4,6 +4,7 @@
 -- =====================================================================
 
 SET FOREIGN_KEY_CHECKS = 0;
+SET NAMES utf8mb4;
 
 DROP TABLE IF EXISTS `update_audit_logs`;
 DROP TABLE IF EXISTS `migrations`;
@@ -304,13 +305,13 @@ CREATE TABLE `payment_methods` (
   `name` VARCHAR(100) NOT NULL,
   `code` VARCHAR(50) NOT NULL UNIQUE,
   `type` ENUM('automatic', 'manual') NOT NULL DEFAULT 'automatic',
-  `icon` VARCHAR(10) NOT NULL DEFAULT '💳',
+  `icon` VARCHAR(50) NOT NULL DEFAULT '',
   `min_amount` DECIMAL(12, 4) NOT NULL DEFAULT 100.0000,
   `max_amount` DECIMAL(12, 4) NOT NULL DEFAULT 50000.0000,
   `fee_percent` DECIMAL(5, 2) NOT NULL DEFAULT 0.00,
   `instructions` TEXT NULL,
   `config_data` TEXT NULL,
-  `status` ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  `status` VARCHAR(20) NOT NULL DEFAULT 'active',
   `mode` ENUM('test', 'live') NOT NULL DEFAULT 'test',
   `sort_order` INT NOT NULL DEFAULT 0,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

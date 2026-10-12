@@ -318,7 +318,7 @@ require_once __DIR__ . '/../includes/header.php';
         <div class="grid grid-cols-1 gap-4">
             <?php foreach ($allGateways as $gw): 
                 $isConfigured = is_gateway_configured($gw);
-                $isEnabled = ($gw['status'] === 'active');
+                $isEnabled = is_gateway_active($gw['status'] ?? '');
                 $cfg = get_gateway_config($gw);
                 $modeVal = $gw['mode'] ?? ($cfg['mode'] ?? 'test');
                 $isLive = in_array(strtolower($modeVal), ['live', 'production'], true);

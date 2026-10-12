@@ -94,7 +94,7 @@ if ($action === 'verify_phonepe_qr') {
 
     require_once __DIR__ . '/../includes/gmail_verifier.php';
     $gw = get_payment_method('phonepe_business_qr');
-    if (!$gw || $gw['status'] !== 'active') {
+    if (!$gw || !is_gateway_active($gw['status'] ?? '')) {
         echo json_encode(['status' => 'inactive', 'message' => 'PhonePe Business QR gateway is inactive']);
         exit;
     }

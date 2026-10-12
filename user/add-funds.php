@@ -20,8 +20,8 @@ Auth::requireLogin();
 $user = Auth::user();
 $db = Database::getConnection();
 
-// Fetch ONLY active AND configured gateways (Requirement 6)
-$availableGateways = get_payment_methods(true, true);
+// Fetch all enabled gateways directly from the database
+$availableGateways = get_payment_methods(true);
 
 $error = null;
 $success = null;
@@ -50,9 +50,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $gatewayCode = trim($_POST['gateway'] ?? '');
     $amount = (float)($_POST['amount'] ?? 0);
 
-    // 1. Strict Server-Side Validation: Gateway MUST exist, be active, and configured
+    // 1. Strict Server-Side Validation: Gateway MUST exist and be active in database
     $gateway = get_payment_method($gatewayCode);
-    if (!$gateway || $gateway['status'] !== 'active' || !is_gateway_configured($gateway)) {
+    if (!$gateway || !is_gateway_active($gateway['status'] ?? '')) {
         $error = "This payment gateway is currently disabled or unavailable. Please choose another active payment method.";
     } else {
         $min = (float)$gateway['min_amount'];

@@ -30,7 +30,7 @@ $db = Database::getConnection();
 
 // Check if PhonePe Business QR gateway is active & configured
 $gw = get_payment_method('phonepe_business_qr');
-if (!$gw || $gw['status'] !== 'active') {
+if (!$gw || !is_gateway_active($gw['status'] ?? '')) {
     echo "[" . date('Y-m-d H:i:s') . "] PhonePe Business QR gateway is disabled. Skipping check.\n";
     exit(0);
 }
