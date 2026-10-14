@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
+require_once __DIR__ . '/payment_service.php';
 
 function e(?string $string): string {
     return htmlspecialchars((string)$string, ENT_QUOTES, 'UTF-8');
@@ -734,6 +735,7 @@ function is_gateway_configured(array $gateway): bool {
         'phonepe' => !empty($config['merchant_id']) || !empty($config['upi_id']) || !empty($gateway['instructions']),
         'paytm' => !empty($config['upi_id']) || !empty($config['merchant_id']) || !empty($gateway['instructions']),
         'binance' => !empty($config['api_key']) || !empty($gateway['instructions']),
+        'cashfree' => !empty($config['app_id']) || !empty($config['client_id']) || !empty($gateway['instructions']),
         'phonepe_business_qr' => !empty($config['qr_image_url']) || !empty($config['upi_id']) || !empty($config['merchant_id']) || !empty($gateway['instructions']),
         default => true
     };
@@ -853,6 +855,20 @@ function ensure_payment_methods_seeded(\PDO $db): void {
                 'status' => 'inactive',
                 'mode' => 'test',
                 'sort_order' => 6
+            ],
+            [
+                'name' => 'Cashfree Payments',
+                'code' => 'cashfree',
+                'type' => 'automatic',
+                'icon' => '💳',
+                'min_amount' => 100,
+                'max_amount' => 100000,
+                'fee_percent' => 0,
+                'instructions' => 'Instant checkout with UPI, Credit/Debit cards, Net Banking & Wallets via Cashfree Payments.',
+                'config_data' => json_encode(['app_id' => '', 'secret_key' => '', 'mode' => 'sandbox']),
+                'status' => 'inactive',
+                'mode' => 'test',
+                'sort_order' => 7
             ]
         ];
 

@@ -3,9 +3,14 @@
  * Add Funds Page (Dynamic Production Gateway Architecture)
  * SMM Panel - PHP 8.3+
  *
- * Dynamically displays ONLY payment gateways enabled & configured by Admin:
- * Razorpay, PayPal, PhonePe, Paytm, Binance Pay
- * Server-side security prevents manual execution of disabled gateways.
+ * Real Provider-Hosted Payment Flows & Instant Verifications:
+ * - Razorpay (Standard Checkout & Orders API v1)
+ * - PhonePe Payment Gateway (PG v1 Pay Page & S2S Status Check)
+ * - PayPal (REST Orders API v2 & OAuth Capture)
+ * - Binance Pay (OpenAPI v2 & HMAC-SHA512)
+ * - Cashfree Payments (PG v2023-08-01 Orders & Webhooks)
+ * - PhonePe Business QR (Automated Gmail Reconciler & Manual UTR)
+ * - Paytm UPI QR (Manual UTR verification)
  */
 
 declare(strict_types=1);
@@ -15,22 +20,347 @@ require_once __DIR__ . '/../includes/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/csrf.php';
 require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/../includes/payment_service.php';
 
 Auth::requireLogin();
 $user = Auth::user();
 $db = Database::getConnection();
 
-// Fetch all enabled gateways directly from the database
+// =========================================================================
+// 1. PROVIDER RETURN & CALLBACK HANDLERS
+// =========================================================================
+$returnGateway = strtolower(trim($_GET['gateway'] ?? ''));
+$action = strtolower(trim($_GET['action'] ?? ''));
+$depositId = (int)($_GET['deposit_id'] ?? ($_GET['txn_id'] ?? 0));
+
+// 1.1 RAZORPAY RETURN VERIFICATION
+if ($returnGateway === 'razorpay' && $action === 'verify') {
+    CSRF::verifyOrAbort();
+
+    $razorpayPaymentId = trim($_POST['razorpay_payment_id'] ?? '');
+    $razorpayOrderId = trim($_POST['razorpay_order_id'] ?? '');
+    $razorpaySignature = trim($_POST['razorpay_signature'] ?? '');
+
+    if (empty($razorpayPaymentId) || empty($razorpayOrderId) || empty($razorpaySignature)) {
+        set_flash('error', "Incomplete Razorpay payment verification parameters.");
+        redirect('/user/add-funds.php');
+    }
+
+    $isSigValid = RazorpayGatewayService::verifySignature($razorpayOrderId, $razorpayPaymentId, $razorpaySignature);
+    if (!$isSigValid) {
+        set_flash('error', "Razorpay payment signature mismatch. Payment verification failed.");
+        redirect('/user/add-funds.php');
+    }
+
+    $paymentData = RazorpayGatewayService::fetchPayment($razorpayPaymentId);
+    if (!$paymentData || !in_array($paymentData['status'] ?? '', ['captured', 'authorized'], true)) {
+        set_flash('error', "Razorpay payment verification returned non-captured status.");
+        redirect('/user/add-funds.php');
+    }
+
+    $verifiedAmount = ((float)($paymentData['amount'] ?? 0)) / 100;
+    $res = fulfill_deposit_transaction($db, $depositId, $razorpayPaymentId, $verifiedAmount, "Verified via Razorpay API (Payment #{$razorpayPaymentId})");
+
+    if ($res['success']) {
+        set_flash('success', "Payment of " . format_currency($res['amount']) . " successfully verified and added to your wallet!");
+    } else {
+        set_flash('error', "Failed to credit wallet: " . $res['error']);
+    }
+    redirect('/user/add-funds.php');
+}
+
+// 1.2 PHONEPE RETURN CALLBACK
+if ($returnGateway === 'phonepe' && $action === 'callback') {
+    $stmt = $db->prepare("SELECT * FROM transactions WHERE id = :id AND user_id = :uid LIMIT 1");
+    $stmt->execute(['id' => $depositId, 'uid' => $user['id']]);
+    $txn = $stmt->fetch();
+
+    if (!$txn) {
+        set_flash('error', "Transaction record #{$depositId} not found.");
+        redirect('/user/add-funds.php');
+    }
+
+    $merchantTxnId = (string)($txn['gateway_txn_id'] ?? '');
+    $statusCheck = PhonePeGatewayService::checkStatus($merchantTxnId);
+
+    if ($statusCheck['success'] && !empty($statusCheck['is_paid'])) {
+        $res = fulfill_deposit_transaction($db, $depositId, $statusCheck['provider_txn_id'], (float)$txn['amount'], "Verified via PhonePe Gateway API");
+        if ($res['success']) {
+            set_flash('success', "Payment of " . format_currency($res['amount']) . " successfully verified via PhonePe and added to your wallet!");
+        } else {
+            set_flash('error', "Failed to credit wallet: " . $res['error']);
+        }
+    } else {
+        if ($txn['status'] === 'pending') {
+            $failStmt = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Payment Failed or Cancelled on PhonePe]') WHERE id = :id");
+            $failStmt->execute(['id' => $depositId]);
+        }
+        set_flash('error', "PhonePe payment was not completed or failed. If amount was debited, your bank will reverse it.");
+    }
+    redirect('/user/add-funds.php');
+}
+
+// 1.3 PAYPAL RETURN / CANCEL
+if ($returnGateway === 'paypal') {
+    if ($action === 'return') {
+        $token = trim($_GET['token'] ?? ''); // PayPal Order ID
+        $captureRes = PayPalGatewayService::captureOrder($token);
+
+        if ($captureRes['success'] && !empty($captureRes['is_paid'])) {
+            $captureId = $captureRes['capture_id'] ?? $token;
+            $res = fulfill_deposit_transaction($db, $depositId, $captureId, null, "Verified via PayPal Capture API (Capture #{$captureId})");
+            if ($res['success']) {
+                set_flash('success', "PayPal payment of " . format_currency($res['amount']) . " successfully captured and added to your wallet!");
+            } else {
+                set_flash('error', "Failed to credit wallet: " . $res['error']);
+            }
+        } else {
+            set_flash('error', "PayPal capture failed: " . ($captureRes['error'] ?? 'Order was not completed.'));
+        }
+    } elseif ($action === 'cancel') {
+        $stmt = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Cancelled on PayPal]') WHERE id = :id AND user_id = :uid AND status = 'pending'");
+        $stmt->execute(['id' => $depositId, 'uid' => $user['id']]);
+        set_flash('info', "PayPal payment checkout was cancelled.");
+    }
+    redirect('/user/add-funds.php');
+}
+
+// 1.4 BINANCE PAY RETURN / CANCEL
+if ($returnGateway === 'binance') {
+    if ($action === 'return') {
+        $stmt = $db->prepare("SELECT * FROM transactions WHERE id = :id AND user_id = :uid LIMIT 1");
+        $stmt->execute(['id' => $depositId, 'uid' => $user['id']]);
+        $txn = $stmt->fetch();
+
+        if ($txn) {
+            $merchantTradeNo = (string)$txn['gateway_txn_id'];
+            $queryRes = BinancePayGatewayService::queryOrder($merchantTradeNo);
+
+            if ($queryRes['success'] && !empty($queryRes['is_paid'])) {
+                $res = fulfill_deposit_transaction($db, $depositId, $merchantTradeNo, (float)$txn['amount'], "Verified via Binance Pay OpenAPI");
+                if ($res['success']) {
+                    set_flash('success', "Binance Pay payment of " . format_currency($res['amount']) . " successfully verified and added to your wallet!");
+                } else {
+                    set_flash('error', "Failed to credit wallet: " . $res['error']);
+                }
+            } else {
+                set_flash('warning', "Binance Pay transaction is pending blockchain confirmation. Wallet will be credited once confirmed.");
+            }
+        }
+    } elseif ($action === 'cancel') {
+        $stmt = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Cancelled on Binance Pay]') WHERE id = :id AND user_id = :uid AND status = 'pending'");
+        $stmt->execute(['id' => $depositId, 'uid' => $user['id']]);
+        set_flash('info', "Binance Pay checkout was cancelled.");
+    }
+    redirect('/user/add-funds.php');
+}
+
+// 1.5 CASHFREE RETURN
+if ($returnGateway === 'cashfree' && $action === 'return') {
+    $orderId = trim($_GET['order_id'] ?? '');
+    if (empty($orderId) && $depositId > 0) {
+        $stmt = $db->prepare("SELECT gateway_txn_id FROM transactions WHERE id = :id LIMIT 1");
+        $stmt->execute(['id' => $depositId]);
+        $orderId = (string)$stmt->fetchColumn();
+    }
+
+    if (!empty($orderId)) {
+        $orderCheck = CashfreeGatewayService::getOrder($orderId);
+        if ($orderCheck['success'] && !empty($orderCheck['is_paid'])) {
+            $res = fulfill_deposit_transaction($db, $depositId, $orderId, null, "Verified via Cashfree PG API");
+            if ($res['success']) {
+                set_flash('success', "Cashfree payment of " . format_currency($res['amount']) . " successfully verified and added to your wallet!");
+            } else {
+                set_flash('error', "Failed to credit wallet: " . $res['error']);
+            }
+        } else {
+            $orderStatus = $orderCheck['order_status'] ?? 'PENDING';
+            if (in_array($orderStatus, ['CANCELLED', 'EXPIRED', 'TERMINATED', 'FAILED'], true)) {
+                $failStmt = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Cashfree Status: " . addslashes($orderStatus) . "]') WHERE id = :id AND status = 'pending'");
+                $failStmt->execute(['id' => $depositId]);
+                set_flash('error', "Cashfree payment was not completed (Status: {$orderStatus}).");
+            } else {
+                set_flash('info', "Cashfree payment is being processed. Your wallet will update as soon as confirmed.");
+            }
+        }
+    }
+    redirect('/user/add-funds.php');
+}
+
+// =========================================================================
+// 2. CHECKOUT OVERLAY VIEWS (Razorpay & Cashfree SDK)
+// =========================================================================
+$checkoutMode = strtolower(trim($_GET['checkout'] ?? ''));
+$checkoutDepositId = (int)($_GET['deposit_id'] ?? 0);
+
+if ($checkoutMode === 'razorpay' && $checkoutDepositId > 0) {
+    $stmt = $db->prepare("SELECT * FROM transactions WHERE id = :id AND user_id = :uid AND status = 'pending' LIMIT 1");
+    $stmt->execute(['id' => $checkoutDepositId, 'uid' => $user['id']]);
+    $chkTxn = $stmt->fetch();
+
+    if (!$chkTxn) {
+        set_flash('error', "Active Razorpay checkout session not found.");
+        redirect('/user/add-funds.php');
+    }
+
+    $rzpCfg = RazorpayGatewayService::getConfig();
+    $rzpOrderId = (string)$chkTxn['gateway_txn_id'];
+    $amountPaise = (int)round((float)$chkTxn['amount'] * 100);
+
+    $pageTitle = "Complete Razorpay Checkout - " . app_name();
+    require_once __DIR__ . '/../includes/header.php';
+    ?>
+    <div class="max-w-md mx-auto my-12 p-8 bg-white rounded-3xl border border-slate-200/80 shadow-xl text-center space-y-6">
+        <div class="w-16 h-16 mx-auto rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-3xl shadow-sm">
+            ⚡
+        </div>
+        <div>
+            <h2 class="text-xl font-black text-slate-900">Complete Razorpay Payment</h2>
+            <p class="text-xs text-slate-400 mt-1">Instant checkout supporting UPI, Cards, NetBanking &amp; Wallets</p>
+        </div>
+        <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 font-mono text-center">
+            <span class="text-xs text-slate-500 uppercase tracking-wider block">Amount to Pay</span>
+            <span class="text-3xl font-black text-slate-900 mt-1 block"><?= format_currency($chkTxn['amount']) ?></span>
+            <span class="text-[11px] text-slate-400 mt-1 block">Order #<?= e($rzpOrderId) ?></span>
+        </div>
+
+        <form id="rzp-form" action="/user/add-funds.php?gateway=razorpay&action=verify&deposit_id=<?= $checkoutDepositId ?>" method="POST">
+            <?= CSRF::field() ?>
+            <input type="hidden" name="razorpay_payment_id" id="razorpay_payment_id">
+            <input type="hidden" name="razorpay_order_id" id="razorpay_order_id">
+            <input type="hidden" name="razorpay_signature" id="razorpay_signature">
+            <button type="button" id="rzp-button" class="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white font-black text-xs rounded-xl shadow-md shadow-blue-500/25 transition-all cursor-pointer">
+                Pay Now with Razorpay &rarr;
+            </button>
+        </form>
+
+        <a href="/user/add-funds.php" class="inline-block text-xs font-bold text-slate-400 hover:text-slate-600">
+            &larr; Cancel and return to Add Funds
+        </a>
+    </div>
+
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+    const options = {
+        key: "<?= e($rzpCfg['key_id']) ?>",
+        amount: <?= $amountPaise ?>,
+        currency: "INR",
+        name: "<?= addslashes(app_name()) ?>",
+        description: "Deposit #<?= $checkoutDepositId ?> Wallet Credit",
+        order_id: "<?= e($rzpOrderId) ?>",
+        prefill: {
+            name: "<?= addslashes($user['username']) ?>",
+            email: "<?= addslashes($user['email']) ?>"
+        },
+        theme: {
+            color: "#2563eb"
+        },
+        handler: function(response) {
+            document.getElementById('razorpay_payment_id').value = response.razorpay_payment_id;
+            document.getElementById('razorpay_order_id').value = response.razorpay_order_id;
+            document.getElementById('razorpay_signature').value = response.razorpay_signature;
+            document.getElementById('rzp-form').submit();
+        },
+        modal: {
+            ondismiss: function() {
+                // User closed popup
+            }
+        }
+    };
+    const rzp = new Razorpay(options);
+    document.getElementById('rzp-button').onclick = function(e) {
+        rzp.open();
+        e.preventDefault();
+    };
+    // Automatically trigger Razorpay popup on load
+    window.addEventListener('load', function() {
+        rzp.open();
+    });
+    </script>
+    <?php
+    require_once __DIR__ . '/../includes/footer.php';
+    exit;
+}
+
+if ($checkoutMode === 'cashfree' && $checkoutDepositId > 0) {
+    $stmt = $db->prepare("SELECT * FROM transactions WHERE id = :id AND user_id = :uid AND status = 'pending' LIMIT 1");
+    $stmt->execute(['id' => $checkoutDepositId, 'uid' => $user['id']]);
+    $chkTxn = $stmt->fetch();
+
+    if (!$chkTxn) {
+        set_flash('error', "Active Cashfree checkout session not found.");
+        redirect('/user/add-funds.php');
+    }
+
+    $cfCfg = CashfreeGatewayService::getConfig();
+    $sessionId = $_SESSION['cf_payment_session_' . $checkoutDepositId] ?? '';
+    $orderId = (string)$chkTxn['gateway_txn_id'];
+    $checkoutUrl = ($cfCfg['mode'] === 'production')
+        ? 'https://payments.cashfree.com/forms/' . urlencode($sessionId)
+        : 'https://payments-test.cashfree.com/forms/' . urlencode($sessionId);
+
+    $pageTitle = "Complete Cashfree Checkout - " . app_name();
+    require_once __DIR__ . '/../includes/header.php';
+    ?>
+    <div class="max-w-md mx-auto my-12 p-8 bg-white rounded-3xl border border-slate-200/80 shadow-xl text-center space-y-6">
+        <div class="w-16 h-16 mx-auto rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-3xl shadow-sm">
+            💳
+        </div>
+        <div>
+            <h2 class="text-xl font-black text-slate-900">Cashfree Payments Checkout</h2>
+            <p class="text-xs text-slate-400 mt-1">Official secure payment gateway for UPI, Cards &amp; NetBanking</p>
+        </div>
+        <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 font-mono text-center">
+            <span class="text-xs text-slate-500 uppercase tracking-wider block">Deposit Amount</span>
+            <span class="text-3xl font-black text-indigo-600 mt-1 block"><?= format_currency($chkTxn['amount']) ?></span>
+            <span class="text-[11px] text-slate-400 mt-1 block">Order #<?= e($orderId) ?></span>
+        </div>
+
+        <div class="space-y-3">
+            <button type="button" id="cf-pay-btn" class="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 active:scale-98 text-white font-black text-xs rounded-xl shadow-md shadow-indigo-500/25 transition-all cursor-pointer">
+                Proceed to Cashfree Checkout &rarr;
+            </button>
+            <a href="<?= e($checkoutUrl) ?>" target="_blank" class="block text-xs font-bold text-indigo-600 hover:underline">
+                Or open Cashfree hosted payment page in new tab &rarr;
+            </a>
+        </div>
+
+        <a href="/user/add-funds.php" class="inline-block text-xs font-bold text-slate-400 hover:text-slate-600">
+            &larr; Cancel and return to Add Funds
+        </a>
+    </div>
+
+    <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+    <script>
+    const cashfree = Cashfree({
+        mode: "<?= $cfCfg['mode'] === 'production' ? 'production' : 'sandbox' ?>"
+    });
+    function launchCashfree() {
+        cashfree.checkout({
+            paymentSessionId: "<?= e($sessionId) ?>",
+            redirectTarget: "_self"
+        });
+    }
+    document.getElementById('cf-pay-btn').onclick = launchCashfree;
+    window.addEventListener('load', function() {
+        setTimeout(launchCashfree, 500);
+    });
+    </script>
+    <?php
+    require_once __DIR__ . '/../includes/footer.php';
+    exit;
+}
+
+// Fetch all enabled gateways directly from database
 $availableGateways = get_payment_methods(true);
 
 $error = null;
 $success = null;
 
-// Determine default active tab
+// Determine active tab
 $defaultMethod = !empty($availableGateways) ? $availableGateways[0]['code'] : '';
 $activeTab = $_GET['method'] ?? $defaultMethod;
 
-// Verify activeTab is valid, fallback to first available
 $activeGatewayData = null;
 foreach ($availableGateways as $gw) {
     if ($gw['code'] === $activeTab) {
@@ -43,17 +373,18 @@ if (!$activeGatewayData && !empty($availableGateways)) {
     $activeTab = $activeGatewayData['code'];
 }
 
-// Handle Form Submission with Server-Side Validation (Requirements 4, 6 & 7)
+// =========================================================================
+// 3. HANDLE DEPOSIT FORM SUBMISSION (GENUINE PROVIDER FLOWS)
+// =========================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     CSRF::verifyOrAbort();
 
-    $gatewayCode = trim($_POST['gateway'] ?? '');
+    $gatewayCode = strtolower(trim($_POST['gateway'] ?? ''));
     $amount = (float)($_POST['amount'] ?? 0);
 
-    // 1. Strict Server-Side Validation: Gateway MUST exist and be active in database
     $gateway = get_payment_method($gatewayCode);
     if (!$gateway || !is_gateway_active($gateway['status'] ?? '')) {
-        $error = "This payment gateway is currently disabled or unavailable. Please choose another active payment method.";
+        $error = "This payment gateway is currently disabled or unavailable. Please choose another payment method.";
     } else {
         $min = (float)$gateway['min_amount'];
         $max = (float)$gateway['max_amount'];
@@ -65,102 +396,156 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $gatewayConfig = get_gateway_config($gateway);
 
-            // Handle specific gateway submission
+            // -------------------------------------------------------------
+            // A. RAZORPAY
+            // -------------------------------------------------------------
             if ($gatewayCode === 'razorpay') {
-                $orderId = 'rzp_ord_' . bin2hex(random_bytes(6));
                 $stmt = $db->prepare("
                     INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                    VALUES (:uid, 'deposit', :amt, 'Razorpay', :txnid, 'pending', 'Awaiting Razorpay gateway completion')
+                    VALUES (:uid, 'deposit', :amt, 'Razorpay', NULL, 'pending', 'Awaiting Razorpay checkout')
                 ");
-                $stmt->execute([
-                    'uid' => $user['id'],
-                    'amt' => $amount,
-                    'txnid' => $orderId
-                ]);
+                $stmt->execute(['uid' => $user['id'], 'amt' => $amount]);
+                $depositId = (int)$db->lastInsertId();
 
-                $_SESSION['pending_razorpay'] = [
-                    'txn_id' => $db->lastInsertId(),
-                    'order_id' => $orderId,
-                    'amount' => $amount
-                ];
+                $orderRes = RazorpayGatewayService::createOrder($amount, $depositId, $user);
+                if ($orderRes['success']) {
+                    $upd = $db->prepare("UPDATE transactions SET gateway_txn_id = :ord WHERE id = :id");
+                    $upd->execute(['ord' => $orderRes['order_id'], 'id' => $depositId]);
 
-                set_flash('info', "Payment intent initiated for " . format_currency($amount) . ". Complete checkout via Razorpay.");
-                redirect('/user/add-funds.php?checkout=razorpay&order=' . urlencode($orderId));
-            } elseif ($gatewayCode === 'paytm' || $gatewayCode === 'paytm_qr') {
-                $utr = trim($_POST['utr_number'] ?? '');
-                $senderNote = trim($_POST['sender_note'] ?? '');
-
-                if (empty($utr) || strlen($utr) < 6) {
-                    $error = "Please enter a valid 12-digit UTR number or bank transaction reference ID.";
+                    redirect('/user/add-funds.php?checkout=razorpay&deposit_id=' . $depositId);
                 } else {
-                    $check = $db->prepare("SELECT id FROM transactions WHERE gateway_txn_id = :utr LIMIT 1");
-                    $check->execute(['utr' => $utr]);
-                    if ($check->fetch()) {
-                        $error = "This UTR / Transaction ID has already been submitted.";
-                    } else {
-                        $stmt = $db->prepare("
-                            INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                            VALUES (:uid, 'deposit', :amt, :gw, :txnid, 'pending', :note)
-                        ");
-                        $stmt->execute([
-                            'uid' => $user['id'],
-                            'amt' => $amount,
-                            'gw' => $gateway['name'],
-                            'txnid' => $utr,
-                            'note' => "Pending verification (" . ($senderNote ?: "UTR: {$utr}") . ")"
-                        ]);
-
-                        set_flash('success', "Deposit request of " . format_currency($amount) . " submitted! Your UTR #{$utr} is queued for admin verification.");
-                        redirect('/user/add-funds.php');
-                    }
+                    $upd = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Error: ', :err, ']') WHERE id = :id");
+                    $upd->execute(['err' => substr($orderRes['error'], 0, 100), 'id' => $depositId]);
+                    $error = "Razorpay initialization error: " . $orderRes['error'];
                 }
-            } elseif ($gatewayCode === 'phonepe') {
-                $phonePeTxnId = 'pp_' . bin2hex(random_bytes(6));
+            }
+
+            // -------------------------------------------------------------
+            // B. PHONEPE PAYMENT GATEWAY
+            // -------------------------------------------------------------
+            elseif ($gatewayCode === 'phonepe') {
                 $stmt = $db->prepare("
                     INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                    VALUES (:uid, 'deposit', :amt, 'PhonePe', :txnid, 'pending', 'Awaiting PhonePe confirmation')
+                    VALUES (:uid, 'deposit', :amt, 'PhonePe', NULL, 'pending', 'Awaiting PhonePe PG payment')
                 ");
-                $stmt->execute([
-                    'uid' => $user['id'],
-                    'amt' => $amount,
-                    'txnid' => $phonePeTxnId
-                ]);
+                $stmt->execute(['uid' => $user['id'], 'amt' => $amount]);
+                $depositId = (int)$db->lastInsertId();
 
-                set_flash('success', "PhonePe intent #{$phonePeTxnId} created for " . format_currency($amount) . ". Complete via PhonePe UPI.");
-                redirect('/user/add-funds.php');
-            } elseif ($gatewayCode === 'phonepe_business_qr') {
+                $initRes = PhonePeGatewayService::initiatePayment($amount, $depositId, $user);
+                if ($initRes['success'] && !empty($initRes['checkout_url'])) {
+                    $upd = $db->prepare("UPDATE transactions SET gateway_txn_id = :txnid WHERE id = :id");
+                    $upd->execute(['txnid' => $initRes['merchant_txn_id'], 'id' => $depositId]);
+
+                    redirect($initRes['checkout_url']);
+                } else {
+                    $upd = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Error: ', :err, ']') WHERE id = :id");
+                    $upd->execute(['err' => substr($initRes['error'], 0, 100), 'id' => $depositId]);
+                    $error = "PhonePe PG initialization error: " . $initRes['error'];
+                }
+            }
+
+            // -------------------------------------------------------------
+            // C. PAYPAL
+            // -------------------------------------------------------------
+            elseif ($gatewayCode === 'paypal') {
+                $stmt = $db->prepare("
+                    INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
+                    VALUES (:uid, 'deposit', :amt, 'PayPal', NULL, 'pending', 'Awaiting PayPal checkout confirmation')
+                ");
+                $stmt->execute(['uid' => $user['id'], 'amt' => $amount]);
+                $depositId = (int)$db->lastInsertId();
+
+                $orderRes = PayPalGatewayService::createOrder($amount, $depositId, 'USD');
+                if ($orderRes['success'] && !empty($orderRes['checkout_url'])) {
+                    $upd = $db->prepare("UPDATE transactions SET gateway_txn_id = :ord WHERE id = :id");
+                    $upd->execute(['ord' => $orderRes['order_id'], 'id' => $depositId]);
+
+                    redirect($orderRes['checkout_url']);
+                } else {
+                    $upd = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Error: ', :err, ']') WHERE id = :id");
+                    $upd->execute(['err' => substr($orderRes['error'], 0, 100), 'id' => $depositId]);
+                    $error = "PayPal initialization error: " . $orderRes['error'];
+                }
+            }
+
+            // -------------------------------------------------------------
+            // D. BINANCE PAY
+            // -------------------------------------------------------------
+            elseif ($gatewayCode === 'binance') {
+                $stmt = $db->prepare("
+                    INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
+                    VALUES (:uid, 'deposit', :amt, 'Binance Pay', NULL, 'pending', 'Awaiting Binance Pay crypto confirmation')
+                ");
+                $stmt->execute(['uid' => $user['id'], 'amt' => $amount]);
+                $depositId = (int)$db->lastInsertId();
+
+                $orderRes = BinancePayGatewayService::createOrder($amount, $depositId, 'USDT');
+                if ($orderRes['success'] && !empty($orderRes['checkout_url'])) {
+                    $upd = $db->prepare("UPDATE transactions SET gateway_txn_id = :trade WHERE id = :id");
+                    $upd->execute(['trade' => $orderRes['merchant_trade_no'], 'id' => $depositId]);
+
+                    redirect($orderRes['checkout_url']);
+                } else {
+                    $upd = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Error: ', :err, ']') WHERE id = :id");
+                    $upd->execute(['err' => substr($orderRes['error'], 0, 100), 'id' => $depositId]);
+                    $error = "Binance Pay initialization error: " . $orderRes['error'];
+                }
+            }
+
+            // -------------------------------------------------------------
+            // E. CASHFREE PAYMENTS
+            // -------------------------------------------------------------
+            elseif ($gatewayCode === 'cashfree') {
+                $stmt = $db->prepare("
+                    INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
+                    VALUES (:uid, 'deposit', :amt, 'Cashfree Payments', NULL, 'pending', 'Awaiting Cashfree PG completion')
+                ");
+                $stmt->execute(['uid' => $user['id'], 'amt' => $amount]);
+                $depositId = (int)$db->lastInsertId();
+
+                $orderRes = CashfreeGatewayService::createOrder($amount, $depositId, $user);
+                if ($orderRes['success']) {
+                    $upd = $db->prepare("UPDATE transactions SET gateway_txn_id = :ord WHERE id = :id");
+                    $upd->execute(['ord' => $orderRes['order_id'], 'id' => $depositId]);
+
+                    $_SESSION['cf_payment_session_' . $depositId] = $orderRes['payment_session_id'];
+
+                    redirect('/user/add-funds.php?checkout=cashfree&deposit_id=' . $depositId);
+                } else {
+                    $upd = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Error: ', :err, ']') WHERE id = :id");
+                    $upd->execute(['err' => substr($orderRes['error'], 0, 100), 'id' => $depositId]);
+                    $error = "Cashfree initialization error: " . $orderRes['error'];
+                }
+            }
+
+            // -------------------------------------------------------------
+            // F. PHONEPE BUSINESS QR (UTR Submission + Automated Gmail Verification)
+            // -------------------------------------------------------------
+            elseif ($gatewayCode === 'phonepe_business_qr') {
                 $utr = trim($_POST['utr_number'] ?? '');
                 $senderNote = trim($_POST['sender_note'] ?? '');
-
-                // Normalize UTR
                 $cleanUtr = strtoupper(trim(preg_replace('/\s+/', '', $utr)));
 
                 if (empty($cleanUtr) || strlen($cleanUtr) < 6) {
                     $error = "Please enter a valid 12-digit UPI Reference / UTR number from your payment receipt.";
                 } else {
-                    // Check duplicate
-                    $check = $db->prepare("SELECT id, status FROM transactions WHERE gateway_txn_id = :utr LIMIT 1");
+                    $check = $db->prepare("SELECT id FROM transactions WHERE gateway_txn_id = :utr AND status = 'completed' LIMIT 1");
                     $check->execute(['utr' => $cleanUtr]);
-                    $existing = $check->fetch();
-
-                    if ($existing) {
-                        $error = "This UTR / Transaction reference (#{$cleanUtr}) has already been submitted.";
+                    if ($check->fetch()) {
+                        $error = "This UTR / Transaction reference (#{$cleanUtr}) has already been claimed.";
                     } else {
-                        // Create pending deposit
                         $stmt = $db->prepare("
                             INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                            VALUES (:uid, 'deposit', :amt, :gw, :txnid, 'pending', :note)
+                            VALUES (:uid, 'deposit', :amt, 'PhonePe Business QR', :txnid, 'pending', :note)
                         ");
                         $stmt->execute([
                             'uid' => $user['id'],
                             'amt' => $amount,
-                            'gw' => 'PhonePe Business QR',
                             'txnid' => $cleanUtr,
                             'note' => "PhonePe QR Deposit (" . ($senderNote ?: "UTR: {$cleanUtr}") . ")"
                         ]);
                         $depositId = (int)$db->lastInsertId();
 
-                        // Automated verification attempt via Gmail if enabled & configured
                         $autoVerify = (int)($gatewayConfig['auto_verify_on_submit'] ?? 1) === 1;
                         $hasGmail = !empty($gatewayConfig['gmail_email']) || !empty($gatewayConfig['gmail_client_id']);
 
@@ -177,50 +562,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             } elseif (($verifyRes['status'] ?? '') === 'amount_mismatch') {
                                 $error = $verifyRes['error'] ?? "Verification failed: Received amount does not match submitted deposit amount.";
                             } else {
-                                // Email not yet arrived or pending review
                                 set_flash('info', "Deposit request for " . format_currency($amount) . " submitted (UTR #{$cleanUtr}). Awaiting payment notification verification.");
                                 redirect('/user/add-funds.php');
                             }
                         } else {
-                            set_flash('success', "Deposit request for " . format_currency($amount) . " submitted! Your UTR #{$cleanUtr} has been queued for verification.");
+                            set_flash('success', "Deposit request for " . format_currency($amount) . " submitted! Your UTR #{$cleanUtr} has been queued for staff verification.");
                             redirect('/user/add-funds.php');
                         }
                     }
                 }
-            } elseif ($gatewayCode === 'paypal') {
-                $paypalTxnId = 'ppl_' . bin2hex(random_bytes(6));
-                $stmt = $db->prepare("
-                    INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                    VALUES (:uid, 'deposit', :amt, 'PayPal', :txnid, 'pending', 'Awaiting PayPal checkout confirmation')
-                ");
-                $stmt->execute([
-                    'uid' => $user['id'],
-                    'amt' => $amount,
-                    'txnid' => $paypalTxnId
-                ]);
+            }
 
-                set_flash('success', "PayPal invoice #{$paypalTxnId} created for " . format_currency($amount) . ".");
-                redirect('/user/add-funds.php');
-            } elseif ($gatewayCode === 'binance') {
-                $binanceTxnId = 'bin_' . bin2hex(random_bytes(6));
-                $stmt = $db->prepare("
-                    INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                    VALUES (:uid, 'deposit', :amt, 'Binance Pay', :txnid, 'pending', 'Awaiting Binance Pay blockchain confirmation')
-                ");
-                $stmt->execute([
-                    'uid' => $user['id'],
-                    'amt' => $amount,
-                    'txnid' => $binanceTxnId
-                ]);
+            // -------------------------------------------------------------
+            // G. PAYTM QR (UTR Submission)
+            // -------------------------------------------------------------
+            elseif ($gatewayCode === 'paytm' || $gatewayCode === 'paytm_qr') {
+                $utr = trim($_POST['utr_number'] ?? '');
+                $senderNote = trim($_POST['sender_note'] ?? '');
 
-                set_flash('success', "Binance Pay invoice #{$binanceTxnId} generated for " . format_currency($amount) . ".");
-                redirect('/user/add-funds.php');
-            } else {
-                // Fallback for custom or manual gateways
+                if (empty($utr) || strlen($utr) < 6) {
+                    $error = "Please enter a valid 12-digit UTR number or bank transaction reference ID.";
+                } else {
+                    $check = $db->prepare("SELECT id FROM transactions WHERE gateway_txn_id = :utr AND status = 'completed' LIMIT 1");
+                    $check->execute(['utr' => $utr]);
+                    if ($check->fetch()) {
+                        $error = "This UTR / Transaction ID has already been credited.";
+                    } else {
+                        $stmt = $db->prepare("
+                            INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
+                            VALUES (:uid, 'deposit', :amt, :gw, :txnid, 'pending', :note)
+                        ");
+                        $stmt->execute([
+                            'uid' => $user['id'],
+                            'amt' => $amount,
+                            'gw' => $gateway['name'],
+                            'txnid' => $utr,
+                            'note' => "Pending manual verification (" . ($senderNote ?: "UTR: {$utr}") . ")"
+                        ]);
+
+                        set_flash('success', "Deposit request of " . format_currency($amount) . " submitted! Your UTR #{$utr} is queued for admin verification.");
+                        redirect('/user/add-funds.php');
+                    }
+                }
+            }
+
+            // -------------------------------------------------------------
+            // H. GENERIC / MANUAL FALLBACK
+            // -------------------------------------------------------------
+            else {
                 $ref = trim($_POST['reference_id'] ?? bin2hex(random_bytes(6)));
                 $stmt = $db->prepare("
                     INSERT INTO transactions (user_id, type, amount, gateway, gateway_txn_id, status, note)
-                    VALUES (:uid, 'deposit', :amt, :gw, :txnid, 'pending', 'Pending manual confirmation')
+                    VALUES (:uid, 'deposit', :amt, :gw, :txnid, 'pending', 'Pending manual review')
                 ");
                 $stmt->execute([
                     'uid' => $user['id'],
@@ -286,7 +679,7 @@ require_once __DIR__ . '/../includes/header.php';
         </div>
     <?php endif; ?>
 
-    <!-- Gateway Selector & Form Container (Requirement 6) -->
+    <!-- Gateway Selector & Form Container -->
     <div class="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-sm space-y-6">
         <div>
             <h2 class="text-lg font-black text-slate-900 tracking-tight">Select Deposit Gateway</h2>
@@ -357,7 +750,6 @@ require_once __DIR__ . '/../includes/header.php';
                             <div class="grid grid-cols-1 md:grid-cols-12 gap-6 p-5 rounded-2xl bg-gradient-to-br from-purple-50/50 via-slate-50 to-purple-50/30 border border-purple-100 items-center">
                                 <div class="md:col-span-5 flex flex-col items-center justify-center p-4 bg-white rounded-2xl border border-purple-200 text-center shadow-xs">
                                     <?php if (!empty($gwCfg['qr_image_url'])): ?>
-                                        <!-- Exact Admin-Uploaded PhonePe Business QR Image -->
                                         <div class="p-2 bg-white rounded-xl border border-slate-200">
                                             <img src="<?= e($gwCfg['qr_image_url']) ?>" alt="PhonePe Business QR" class="w-48 h-48 object-contain rounded-lg">
                                         </div>
@@ -450,14 +842,14 @@ require_once __DIR__ . '/../includes/header.php';
                                 </div>
                             </div>
                         <?php else: ?>
-                            <!-- Automated Checkout Amount Input -->
+                            <!-- Automated Online Checkout Input -->
                             <div>
                                 <label class="block text-xs font-bold text-slate-700 mb-1">Amount to Add (<?= e(app_currency()) ?>) <span class="text-rose-500">*</span></label>
                                 <input type="number" step="1" min="<?= $minG ?>" max="<?= $maxG ?>" name="amount" required placeholder="<?= $minG ?>" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold focus:ring-2 focus:ring-blue-500">
                             </div>
                         <?php endif; ?>
 
-                        <button type="submit" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs rounded-xl shadow-md shadow-blue-500/25 transition-all">
+                        <button type="submit" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs rounded-xl shadow-md shadow-blue-500/25 transition-all cursor-pointer">
                             Proceed via <?= e($gw['name']) ?> &rarr;
                         </button>
                     </form>

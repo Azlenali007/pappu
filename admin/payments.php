@@ -90,6 +90,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'merchant_id' => trim($_POST['binance_merchant_id'] ?? ''),
                 'mode' => $mode
             ];
+        } elseif ($code === 'cashfree') {
+            $config = [
+                'app_id' => trim($_POST['cashfree_app_id'] ?? ''),
+                'secret_key' => trim($_POST['cashfree_secret_key'] ?? ''),
+                'mode' => in_array($mode, ['production', 'live'], true) ? 'production' : 'sandbox'
+            ];
         } elseif ($code === 'phonepe_business_qr') {
             $existingMethod = get_payment_method('phonepe_business_qr');
             $existingConfig = $existingMethod ? get_gateway_config($existingMethod) : [];
@@ -742,6 +748,26 @@ require_once __DIR__ . '/../includes/header.php';
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Merchant ID (Optional)</label>
                             <input type="text" name="binance_merchant_id" :value="activeGwConfig.merchant_id || ''" placeholder="987654321" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                        </div>
+                    </div>
+                </template>
+
+                <!-- CASHFREE PAYMENTS CONFIGURATION FIELDS -->
+                <template x-if="activeGw?.code === 'cashfree'">
+                    <div class="space-y-3 p-4 rounded-2xl bg-indigo-50/50 border border-indigo-100">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[11px] font-extrabold text-indigo-900 block flex items-center gap-1.5">
+                                <span>💳</span> Cashfree Payments Credentials
+                            </span>
+                            <span class="text-[10px] text-indigo-600 font-bold bg-indigo-100/70 px-2 py-0.5 rounded-md">Official PG API</span>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-bold text-slate-600 mb-1">App ID / Client ID <span class="text-rose-500">*</span></label>
+                            <input type="text" name="cashfree_app_id" :value="activeGwConfig.app_id || activeGwConfig.client_id || ''" placeholder="CF..." class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-bold text-slate-600 mb-1">Secret Key / Client Secret <span class="text-rose-500">*</span></label>
+                            <input type="password" name="cashfree_secret_key" :value="activeGwConfig.secret_key || activeGwConfig.client_secret || ''" placeholder="••••••••••••••••" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
                         </div>
                     </div>
                 </template>
