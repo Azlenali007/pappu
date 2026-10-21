@@ -18,6 +18,11 @@ $db = Database::getConnection();
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     CSRF::verifyOrAbort();
 
+    $existingSecret = get_setting('razorpay_key_secret', '');
+    $submittedSecret = trim($_POST['razorpay_key_secret'] ?? '', " \t\n\r\0\x0B\"'");
+    $keySecret = $submittedSecret !== '' ? $submittedSecret : $existingSecret;
+    $keyId = trim($_POST['razorpay_key_id'] ?? '', " \t\n\r\0\x0B\"'");
+
     $settings = [
         'site_name' => trim($_POST['site_name'] ?? 'SMM Panel'),
         'site_tagline' => trim($_POST['site_tagline'] ?? 'Grow Your Social Media'),
@@ -26,8 +31,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'currency_code' => trim($_POST['currency_code'] ?? 'INR'),
         'min_deposit' => trim($_POST['min_deposit'] ?? '100'),
         'max_deposit' => trim($_POST['max_deposit'] ?? '50000'),
-        'razorpay_key_id' => trim($_POST['razorpay_key_id'] ?? ''),
-        'razorpay_key_secret' => trim($_POST['razorpay_key_secret'] ?? ''),
+        'razorpay_key_id' => $keyId,
+        'razorpay_key_secret' => $keySecret,
         'maintenance_mode' => isset($_POST['maintenance_mode']) ? '1' : '0',
         'allow_registration' => isset($_POST['allow_registration']) ? '1' : '0'
     ];
@@ -36,6 +41,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         set_setting($k, $v);
     }
     update_config_file_settings($settings);
+
+    // Also sync to payment_methods table
+    $rzpMethod = get_payment_method('razorpay');
+    if ($rzpMethod) {
+        $rzpConfig = get_gateway_config($rzpMethod);
+        $rzpConfig['key_id'] = $keyId;
+        if ($keySecret !== '') {
+            $rzpConfig['key_secret'] = $keySecret;
+        }
+        update_gateway_config('razorpay', $rzpConfig);
+    }
 
     set_flash('success', 'System settings updated and saved successfully.');
     redirect('/admin/settings.php');

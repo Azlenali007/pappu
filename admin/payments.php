@@ -51,52 +51,142 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $feePercent = (float)($_POST['fee_percent'] ?? 0);
         $instructions = trim($_POST['instructions'] ?? '');
 
-        // Extract credentials depending on gateway code
+        $existingMethod = get_payment_method($code);
+        $existingConfig = $existingMethod ? get_gateway_config($existingMethod) : [];
+
+        // Extract credentials depending on gateway code (preserving secrets if submitted blank)
         $config = [];
         if ($code === 'razorpay') {
+            $keyId = trim($_POST['razorpay_key_id'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($keyId === '' && !empty($existingConfig['key_id'])) {
+                $keyId = $existingConfig['key_id'];
+            }
+
+            $keySecret = trim($_POST['razorpay_key_secret'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($keySecret === '' && !empty($existingConfig['key_secret'])) {
+                $keySecret = $existingConfig['key_secret'];
+            }
+
+            $webhookSecret = trim($_POST['razorpay_webhook_secret'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($webhookSecret === '' && !empty($existingConfig['webhook_secret'])) {
+                $webhookSecret = $existingConfig['webhook_secret'];
+            }
+
             $config = [
-                'key_id' => trim($_POST['razorpay_key_id'] ?? ''),
-                'key_secret' => trim($_POST['razorpay_key_secret'] ?? ''),
-                'webhook_secret' => trim($_POST['razorpay_webhook_secret'] ?? ''),
-                'mode' => $mode
+                'key_id' => $keyId,
+                'key_secret' => $keySecret,
+                'webhook_secret' => $webhookSecret,
+                'mode' => in_array($mode, ['live', 'production'], true) ? 'live' : 'test'
             ];
+
+            if ($mode === 'live' && str_starts_with($keyId, 'rzp_test_')) {
+                set_flash('warning', "Warning: Mode is set to Live, but a Test Key ID (rzp_test_...) was saved. Razorpay will fail authentication in Live mode until you provide Live keys.");
+            } elseif ($mode === 'test' && str_starts_with($keyId, 'rzp_live_')) {
+                set_flash('warning', "Warning: Mode is set to Test, but a Live Key ID (rzp_live_...) was saved. Please switch mode to Live or enter Test keys.");
+            }
         } elseif ($code === 'paypal') {
+            $clientId = trim($_POST['paypal_client_id'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($clientId === '' && !empty($existingConfig['client_id'])) {
+                $clientId = $existingConfig['client_id'];
+            }
+
+            $clientSecret = trim($_POST['paypal_client_secret'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($clientSecret === '' && !empty($existingConfig['client_secret'])) {
+                $clientSecret = $existingConfig['client_secret'];
+            }
+
+            $webhookId = trim($_POST['paypal_webhook_id'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($webhookId === '' && !empty($existingConfig['webhook_id'])) {
+                $webhookId = $existingConfig['webhook_id'];
+            }
+
             $config = [
-                'client_id' => trim($_POST['paypal_client_id'] ?? ''),
-                'client_secret' => trim($_POST['paypal_client_secret'] ?? ''),
-                'webhook_id' => trim($_POST['paypal_webhook_id'] ?? ''),
+                'client_id' => $clientId,
+                'client_secret' => $clientSecret,
+                'webhook_id' => $webhookId,
                 'mode' => in_array($mode, ['sandbox', 'live'], true) ? $mode : ($mode === 'live' ? 'live' : 'sandbox')
             ];
         } elseif ($code === 'phonepe') {
+            $merchantId = trim($_POST['phonepe_merchant_id'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($merchantId === '' && !empty($existingConfig['merchant_id'])) {
+                $merchantId = $existingConfig['merchant_id'];
+            }
+
+            $saltKey = trim($_POST['phonepe_salt_key'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($saltKey === '' && !empty($existingConfig['salt_key'])) {
+                $saltKey = $existingConfig['salt_key'];
+            }
+
+            $saltIndex = trim($_POST['phonepe_salt_index'] ?? '1');
+            if ($saltIndex === '' && !empty($existingConfig['salt_index'])) {
+                $saltIndex = $existingConfig['salt_index'];
+            }
+
             $config = [
-                'merchant_id' => trim($_POST['phonepe_merchant_id'] ?? ''),
-                'salt_key' => trim($_POST['phonepe_salt_key'] ?? ''),
-                'salt_index' => trim($_POST['phonepe_salt_index'] ?? '1'),
+                'merchant_id' => $merchantId,
+                'salt_key' => $saltKey,
+                'salt_index' => $saltIndex,
                 'mode' => in_array($mode, ['sandbox', 'production'], true) ? $mode : ($mode === 'live' ? 'production' : 'sandbox')
             ];
         } elseif ($code === 'paytm') {
+            $merchantId = trim($_POST['paytm_merchant_id'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($merchantId === '' && !empty($existingConfig['merchant_id'])) {
+                $merchantId = $existingConfig['merchant_id'];
+            }
+
+            $merchantKey = trim($_POST['paytm_merchant_key'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($merchantKey === '' && !empty($existingConfig['merchant_key'])) {
+                $merchantKey = $existingConfig['merchant_key'];
+            }
+
             $config = [
-                'merchant_id' => trim($_POST['paytm_merchant_id'] ?? ''),
-                'merchant_key' => trim($_POST['paytm_merchant_key'] ?? ''),
-                'channel_id' => trim($_POST['paytm_channel_id'] ?? 'WEB'),
-                'industry_type' => trim($_POST['paytm_industry_type'] ?? 'Retail'),
-                'upi_id' => trim($_POST['paytm_upi_id'] ?? 'smmpanel@upi'),
+                'merchant_id' => $merchantId,
+                'merchant_key' => $merchantKey,
+                'channel_id' => trim($_POST['paytm_channel_id'] ?? ($existingConfig['channel_id'] ?? 'WEB')),
+                'industry_type' => trim($_POST['paytm_industry_type'] ?? ($existingConfig['industry_type'] ?? 'Retail')),
+                'upi_id' => trim($_POST['paytm_upi_id'] ?? ($existingConfig['upi_id'] ?? 'smmpanel@upi')),
                 'mode' => in_array($mode, ['staging', 'production'], true) ? $mode : ($mode === 'live' ? 'production' : 'staging')
             ];
         } elseif ($code === 'binance') {
+            $apiKey = trim($_POST['binance_api_key'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($apiKey === '' && !empty($existingConfig['api_key'])) {
+                $apiKey = $existingConfig['api_key'];
+            }
+
+            $secretKey = trim($_POST['binance_secret_key'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($secretKey === '' && !empty($existingConfig['secret_key'])) {
+                $secretKey = $existingConfig['secret_key'];
+            }
+
+            $merchantId = trim($_POST['binance_merchant_id'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($merchantId === '' && !empty($existingConfig['merchant_id'])) {
+                $merchantId = $existingConfig['merchant_id'];
+            }
+
             $config = [
-                'api_key' => trim($_POST['binance_api_key'] ?? ''),
-                'secret_key' => trim($_POST['binance_secret_key'] ?? ''),
-                'merchant_id' => trim($_POST['binance_merchant_id'] ?? ''),
+                'api_key' => $apiKey,
+                'secret_key' => $secretKey,
+                'merchant_id' => $merchantId,
                 'mode' => $mode
             ];
         } elseif ($code === 'cashfree') {
+            $appId = trim($_POST['cashfree_app_id'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($appId === '' && !empty($existingConfig['app_id'])) {
+                $appId = $existingConfig['app_id'];
+            }
+
+            $secretKey = trim($_POST['cashfree_secret_key'] ?? '', " \t\n\r\0\x0B\"'");
+            if ($secretKey === '' && !empty($existingConfig['secret_key'])) {
+                $secretKey = $existingConfig['secret_key'];
+            }
+
             $config = [
-                'app_id' => trim($_POST['cashfree_app_id'] ?? ''),
-                'secret_key' => trim($_POST['cashfree_secret_key'] ?? ''),
+                'app_id' => $appId,
+                'secret_key' => $secretKey,
                 'mode' => in_array($mode, ['production', 'live'], true) ? 'production' : 'sandbox'
             ];
-        } elseif ($code === 'phonepe_business_qr') {
+        }
+ elseif ($code === 'phonepe_business_qr') {
             $existingMethod = get_payment_method('phonepe_business_qr');
             $existingConfig = $existingMethod ? get_gateway_config($existingMethod) : [];
 
@@ -174,6 +264,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             set_flash('success', "Configuration for '{$name}' saved successfully.");
         } else {
             set_flash('error', "Failed to update configuration for '{$name}'.");
+        }
+        redirect('/admin/payments.php');
+    }
+
+    // 2.5 Test Gateway API Connection
+    if ($action === 'test_gateway_connection') {
+        $code = trim($_POST['code'] ?? '');
+        require_once __DIR__ . '/../includes/payment_service.php';
+
+        if ($code === 'razorpay') {
+            $keyId = trim($_POST['test_key_id'] ?? '');
+            $keySecret = trim($_POST['test_key_secret'] ?? '');
+            $testRes = RazorpayGatewayService::testCredentials($keyId !== '' ? $keyId : null, $keySecret !== '' ? $keySecret : null);
+            if ($testRes['success']) {
+                set_flash('success', $testRes['message']);
+            } else {
+                set_flash('error', $testRes['error']);
+            }
+        } elseif ($code === 'paypal') {
+            $token = PayPalGatewayService::getAccessToken();
+            if ($token) {
+                set_flash('success', "✓ PayPal REST API authentication successful! Connected to PayPal.");
+            } else {
+                set_flash('error', "✕ PayPal authentication failed: Unable to obtain OAuth access token. Please verify Client ID and Client Secret.");
+            }
+        } elseif ($code === 'phonepe') {
+            $cfg = PhonePeGatewayService::getConfig();
+            if (!empty($cfg['merchant_id']) && !empty($cfg['salt_key'])) {
+                set_flash('success', "✓ PhonePe Merchant ID & Salt Key format verified (" . strtoupper($cfg['mode']) . " Mode).");
+            } else {
+                set_flash('error', "✕ PhonePe Merchant ID and Salt Key are required.");
+            }
+        } elseif ($code === 'binance') {
+            $cfg = BinancePayGatewayService::getConfig();
+            if (!empty($cfg['api_key']) && !empty($cfg['secret_key'])) {
+                set_flash('success', "✓ Binance Pay Merchant API Key and Secret Key configured.");
+            } else {
+                set_flash('error', "✕ Binance Pay API Key and Secret Key are required.");
+            }
+        } elseif ($code === 'cashfree') {
+            $cfg = CashfreeGatewayService::getConfig();
+            if (!empty($cfg['app_id']) && !empty($cfg['secret_key'])) {
+                set_flash('success', "✓ Cashfree Client credentials configured (" . strtoupper($cfg['mode']) . " Mode).");
+            } else {
+                set_flash('error', "✕ Cashfree App ID / Client ID and Secret Key are required.");
+            }
         }
         redirect('/admin/payments.php');
     }
@@ -660,18 +796,24 @@ require_once __DIR__ . '/../includes/header.php';
                 <!-- 1. RAZORPAY CONFIGURATION FIELDS -->
                 <template x-if="activeGw?.code === 'razorpay'">
                     <div class="space-y-3 p-4 rounded-2xl bg-blue-50/50 border border-blue-100">
-                        <span class="text-[11px] font-extrabold text-blue-900 block">Razorpay Merchant Credentials</span>
+                        <div class="flex items-center justify-between">
+                            <span class="text-[11px] font-extrabold text-blue-900 block">Razorpay Merchant Credentials</span>
+                            <span class="text-[10px] text-blue-600 bg-blue-100/60 px-2 py-0.5 rounded-md font-semibold">Standard Checkout v1</span>
+                        </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Key ID <span class="text-rose-500">*</span></label>
-                            <input type="text" name="razorpay_key_id" :value="activeGwConfig.key_id || ''" placeholder="rzp_test_..." class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <input type="text" name="razorpay_key_id" :value="activeGwConfig.key_id || ''" placeholder="rzp_test_... or rzp_live_..." class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <p class="text-[10px] text-slate-400 mt-1">Obtain from Razorpay Dashboard &rarr; Account &amp; Settings &rarr; API Keys.</p>
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Key Secret <span class="text-rose-500">*</span></label>
-                            <input type="password" name="razorpay_key_secret" :value="activeGwConfig.key_secret || ''" placeholder="••••••••••••••••" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <input type="password" name="razorpay_key_secret" placeholder="Leave blank to keep existing secret" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <p class="text-[10px] text-slate-400 mt-1">Leave blank to retain current secret. Never exposed to users.</p>
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Webhook Secret (Optional)</label>
-                            <input type="password" name="razorpay_webhook_secret" :value="activeGwConfig.webhook_secret || ''" placeholder="••••••••••••••••" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <input type="password" name="razorpay_webhook_secret" placeholder="Leave blank to keep existing secret" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <p class="text-[10px] text-slate-400 mt-1">Webhook endpoint: <code class="font-mono text-blue-600"><?= app_url('/api/payments.php') ?></code></p>
                         </div>
                     </div>
                 </template>
@@ -686,7 +828,7 @@ require_once __DIR__ . '/../includes/header.php';
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Client Secret <span class="text-rose-500">*</span></label>
-                            <input type="password" name="paypal_client_secret" :value="activeGwConfig.client_secret || ''" placeholder="••••••••••••••••" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <input type="password" name="paypal_client_secret" placeholder="Leave blank to keep existing secret" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Webhook ID (Optional)</label>
@@ -705,7 +847,7 @@ require_once __DIR__ . '/../includes/header.php';
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Salt Key <span class="text-rose-500">*</span></label>
-                            <input type="password" name="phonepe_salt_key" :value="activeGwConfig.salt_key || ''" placeholder="••••••••••••••••" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <input type="password" name="phonepe_salt_key" placeholder="Leave blank to keep existing salt key" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Salt Index</label>
@@ -724,7 +866,7 @@ require_once __DIR__ . '/../includes/header.php';
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Merchant Key <span class="text-rose-500">*</span></label>
-                            <input type="password" name="paytm_merchant_key" :value="activeGwConfig.merchant_key || ''" placeholder="••••••••••••••••" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <input type="password" name="paytm_merchant_key" placeholder="Leave blank to keep existing merchant key" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Official UPI ID for Manual QR</label>
@@ -743,7 +885,7 @@ require_once __DIR__ . '/../includes/header.php';
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Secret Key <span class="text-rose-500">*</span></label>
-                            <input type="password" name="binance_secret_key" :value="activeGwConfig.secret_key || ''" placeholder="••••••••••••••••" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <input type="password" name="binance_secret_key" placeholder="Leave blank to keep existing secret key" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Merchant ID (Optional)</label>
@@ -767,7 +909,7 @@ require_once __DIR__ . '/../includes/header.php';
                         </div>
                         <div>
                             <label class="block text-[11px] font-bold text-slate-600 mb-1">Secret Key / Client Secret <span class="text-rose-500">*</span></label>
-                            <input type="password" name="cashfree_secret_key" :value="activeGwConfig.secret_key || activeGwConfig.client_secret || ''" placeholder="••••••••••••••••" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
+                            <input type="password" name="cashfree_secret_key" placeholder="Leave blank to keep existing secret key" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono">
                         </div>
                     </div>
                 </template>

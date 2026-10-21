@@ -139,23 +139,104 @@ class RazorpayGatewayService {
     public static function getConfig(): array {
         $gw = get_payment_method('razorpay');
         $cfg = $gw ? get_gateway_config($gw) : [];
-        $keyId = trim($cfg['key_id'] ?? get_setting('razorpay_key_id', defined('RAZORPAY_KEY_ID') ? RAZORPAY_KEY_ID : ''));
-        $keySecret = trim($cfg['key_secret'] ?? get_setting('razorpay_key_secret', defined('RAZORPAY_KEY_SECRET') ? RAZORPAY_KEY_SECRET : ''));
-        $webhookSecret = trim($cfg['webhook_secret'] ?? '');
+        $keyId = trim((string)($cfg['key_id'] ?? get_setting('razorpay_key_id', defined('RAZORPAY_KEY_ID') ? RAZORPAY_KEY_ID : '')));
+        $keySecret = trim((string)($cfg['key_secret'] ?? get_setting('razorpay_key_secret', defined('RAZORPAY_KEY_SECRET') ? RAZORPAY_KEY_SECRET : '')));
+        $webhookSecret = trim((string)($cfg['webhook_secret'] ?? ''));
         $mode = $cfg['mode'] ?? 'test';
+
+        // Strip surrounding quotes and whitespace if accidentally pasted
+        $keyId = trim($keyId, " \t\n\r\0\x0B\"'");
+        $keySecret = trim($keySecret, " \t\n\r\0\x0B\"'");
+        $webhookSecret = trim($webhookSecret, " \t\n\r\0\x0B\"'");
+
+        // Filter out placeholder credentials
+        if (function_exists('is_placeholder_credential')) {
+            if (is_placeholder_credential($keyId)) $keyId = '';
+            if (is_placeholder_credential($keySecret)) $keySecret = '';
+            if (is_placeholder_credential($webhookSecret)) $webhookSecret = '';
+        }
 
         return [
             'key_id' => $keyId,
             'key_secret' => $keySecret,
             'webhook_secret' => $webhookSecret,
-            'mode' => $mode
+            'mode' => in_array($mode, ['live', 'production'], true) ? 'live' : 'test'
         ];
+    }
+
+    public static function isConfigured(): bool {
+        $cfg = self::getConfig();
+        if (empty($cfg['key_id']) || empty($cfg['key_secret'])) {
+            return false;
+        }
+        return str_starts_with($cfg['key_id'], 'rzp_test_') || str_starts_with($cfg['key_id'], 'rzp_live_');
+    }
+
+    public static function testCredentials(?string $overrideKeyId = null, ?string $overrideKeySecret = null): array {
+        $cfg = self::getConfig();
+        $keyId = $overrideKeyId !== null ? trim($overrideKeyId, " \t\n\r\0\x0B\"'") : $cfg['key_id'];
+        $keySecret = $overrideKeySecret !== null ? trim($overrideKeySecret, " \t\n\r\0\x0B\"'") : $cfg['key_secret'];
+
+        if (empty($keyId) || empty($keySecret)) {
+            return ['success' => false, 'error' => 'Razorpay Key ID and Key Secret must both be provided.'];
+        }
+
+        $ch = curl_init('https://api.razorpay.com/v1/payments?count=1');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_USERPWD => $keyId . ':' . $keySecret,
+            CURLOPT_TIMEOUT => 15
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        if ($err) {
+            return ['success' => false, 'error' => 'Network error connecting to Razorpay: ' . $err];
+        }
+
+        if ($httpCode === 200) {
+            $modeDetected = str_starts_with($keyId, 'rzp_live_') ? 'Live' : 'Test';
+            return [
+                'success' => true,
+                'message' => "Razorpay API credentials verified successfully! Connected to Razorpay ({$modeDetected} Mode)."
+            ];
+        }
+
+        if ($httpCode === 401) {
+            return [
+                'success' => false,
+                'error' => 'Authentication failed: Razorpay rejected this Key ID / Key Secret. Please verify your keys in Razorpay Dashboard > Settings > API Keys.'
+            ];
+        }
+
+        $data = json_decode((string)$response, true);
+        $msg = $data['error']['description'] ?? ($data['error']['message'] ?? "HTTP error {$httpCode}");
+        return ['success' => false, 'error' => 'Razorpay API returned error: ' . $msg];
     }
 
     public static function createOrder(float $amount, int $depositId, array $user): array {
         $cfg = self::getConfig();
         if (empty($cfg['key_id']) || empty($cfg['key_secret'])) {
-            return ['success' => false, 'error' => 'Razorpay Key ID or Key Secret is not configured in Admin Settings.'];
+            return [
+                'success' => false,
+                'error' => 'Razorpay is not yet configured with valid merchant credentials. Please configure your Razorpay Key ID and Key Secret in Admin > Payments.'
+            ];
+        }
+
+        // Validate Key ID prefix against environment mode
+        if ($cfg['mode'] === 'live' && str_starts_with($cfg['key_id'], 'rzp_test_')) {
+            return [
+                'success' => false,
+                'error' => 'Razorpay mode is set to Live, but a Test Key ID (rzp_test_...) was configured. Please enter your Live Key ID or switch mode to Test in Admin > Payments.'
+            ];
+        }
+        if ($cfg['mode'] === 'test' && str_starts_with($cfg['key_id'], 'rzp_live_')) {
+            return [
+                'success' => false,
+                'error' => 'Razorpay mode is set to Test, but a Live Key ID (rzp_live_...) was configured. Please enter your Test Key ID or switch mode to Live in Admin > Payments.'
+            ];
         }
 
         $amountInPaise = (int)round($amount * 100);
@@ -198,6 +279,15 @@ class RazorpayGatewayService {
                 'amount_paise' => $amountInPaise,
                 'key_id' => $cfg['key_id'],
                 'currency' => 'INR'
+            ];
+        }
+
+        if ($httpCode === 401) {
+            $desc = $data['error']['description'] ?? 'Authentication failed';
+            return [
+                'success' => false,
+                'error' => "Authentication failed: Razorpay rejected the configured Key ID or Key Secret. Please verify your credentials in Admin > Payments and verify they match your environment (" . strtoupper($cfg['mode']) . ").",
+                'raw' => $data
             ];
         }
 

@@ -351,8 +351,8 @@ if ($checkoutMode === 'cashfree' && $checkoutDepositId > 0) {
     exit;
 }
 
-// Fetch all enabled gateways directly from database
-$availableGateways = get_payment_methods(true);
+// Fetch all enabled AND properly configured gateways directly from database
+$availableGateways = get_payment_methods(true, true);
 
 $error = null;
 $success = null;
@@ -385,6 +385,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $gateway = get_payment_method($gatewayCode);
     if (!$gateway || !is_gateway_active($gateway['status'] ?? '')) {
         $error = "This payment gateway is currently disabled or unavailable. Please choose another payment method.";
+    } elseif (!is_gateway_configured($gateway)) {
+        $error = "This payment method is currently undergoing configuration and is temporarily unavailable. Please choose another payment method or contact support.";
     } else {
         $min = (float)$gateway['min_amount'];
         $max = (float)$gateway['max_amount'];
@@ -416,7 +418,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $upd = $db->prepare("UPDATE transactions SET status = 'failed', note = CONCAT(COALESCE(note, ''), ' [Error: ', :err, ']') WHERE id = :id");
                     $upd->execute(['err' => substr($orderRes['error'], 0, 100), 'id' => $depositId]);
-                    $error = "Razorpay initialization error: " . $orderRes['error'];
+                    $error = $orderRes['error'];
                 }
             }
 

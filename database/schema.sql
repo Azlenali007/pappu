@@ -369,8 +369,8 @@ INSERT INTO `settings` (`key`, `value`) VALUES
 ('app_version', '1.0.0'),
 ('mass_order_enabled', '1'),
 ('dripfeed_enabled', '1'),
-('razorpay_key_id', 'rzp_test_YourKeyHere'),
-('razorpay_key_secret', 'YourSecretKeyHere'),
+('razorpay_key_id', ''),
+('razorpay_key_secret', ''),
 ('min_deposit', '100'),
 ('max_deposit', '50000'),
 ('maintenance_mode', '0'),
@@ -392,7 +392,7 @@ INSERT INTO `currencies` (`code`, `symbol`, `name`, `exchange_rate`, `is_base`, 
 
 -- Default Seed Payment Gateways (Razorpay, PayPal, PhonePe, Paytm, Binance Pay, PhonePe Business QR)
 INSERT INTO `payment_methods` (`name`, `code`, `type`, `icon`, `min_amount`, `max_amount`, `fee_percent`, `instructions`, `config_data`, `status`, `mode`, `sort_order`) VALUES
-('Razorpay', 'razorpay', 'automatic', '⚡', 100.0000, 50000.0000, 0.00, 'Automated instant checkout supporting UPI, Credit/Debit cards, Net Banking & Wallets.', '{"key_id":"rzp_test_YourKeyHere","key_secret":"","webhook_secret":"","mode":"test"}', 'active', 'test', 1),
+('Razorpay', 'razorpay', 'automatic', '⚡', 100.0000, 50000.0000, 0.00, 'Automated instant checkout supporting UPI, Credit/Debit cards, Net Banking & Wallets.', '{"key_id":"","key_secret":"","webhook_secret":"","mode":"test"}', 'inactive', 'test', 1),
 ('PayPal', 'paypal', 'automatic', '🅿️', 500.0000, 500000.0000, 3.50, 'Global payment checkout via PayPal account, Visa, MasterCard, and Amex.', '{"client_id":"","client_secret":"","webhook_id":"","mode":"sandbox"}', 'inactive', 'test', 2),
 ('PhonePe', 'phonepe', 'automatic', '🟣', 100.0000, 100000.0000, 0.00, 'Direct PhonePe UPI & QR automated payment with instant server callback.', '{"merchant_id":"","salt_key":"","salt_index":"1","mode":"sandbox"}', 'inactive', 'test', 3),
 ('Paytm', 'paytm', 'automatic', '📲', 50.0000, 100000.0000, 0.00, 'Paytm Gateway / UPI QR & Net Banking with automated verification.', '{"merchant_id":"","merchant_key":"","channel_id":"WEB","industry_type":"Retail","upi_id":"smmpanel@upi","mode":"staging"}', 'inactive', 'test', 4),

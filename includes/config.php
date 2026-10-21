@@ -39,8 +39,8 @@ define('APP_CURRENCY', '₹');
 define('APP_CURRENCY_CODE', 'INR');
 
 // Razorpay Payment Gateway Credentials
-define('RAZORPAY_KEY_ID', getenv('RAZORPAY_KEY_ID') ?: 'rzp_test_YourKeyHere');
-define('RAZORPAY_KEY_SECRET', getenv('RAZORPAY_KEY_SECRET') ?: 'YourSecretKeyHere');
+define('RAZORPAY_KEY_ID', getenv('RAZORPAY_KEY_ID') ?: '');
+define('RAZORPAY_KEY_SECRET', getenv('RAZORPAY_KEY_SECRET') ?: '');
 
 // Session security configuration
 if (session_status() === PHP_SESSION_NONE) {

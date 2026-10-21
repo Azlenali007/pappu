@@ -721,22 +721,89 @@ function is_gateway_active(mixed $status): bool {
     return false;
 }
 
+/**
+ * Helper to identify unconfigured or placeholder credentials.
+ */
+function is_placeholder_credential(?string $value): bool {
+    if ($value === null) {
+        return true;
+    }
+    $val = trim($value, " \t\n\r\0\x0B\"'");
+    if ($val === '') {
+        return true;
+    }
+    $lower = strtolower($val);
+    $placeholders = [
+        'rzp_test_yourkeyhere',
+        'yoursecretkeyhere',
+        'yourkeyhere',
+        'yourpaytmmid',
+        'yourpaytmmid123',
+        'merchantuat',
+        'axxxxxxxxx',
+        '8xxxxxxxxx',
+        'placeholder',
+        'change_me',
+        'example',
+        'xxxxxxxxx',
+        'your_api_key',
+        'your_secret_key'
+    ];
+    if (in_array($lower, $placeholders, true)) {
+        return true;
+    }
+    // Masked password placeholders like •••••••• or ********
+    if (preg_match('/^[•\*\.\s]+$/u', $val)) {
+        return true;
+    }
+    return false;
+}
+
 function is_gateway_configured(array $gateway): bool {
     $code = strtolower(trim($gateway['code'] ?? ''));
     $config = get_gateway_config($gateway);
 
-    if (!empty($gateway['instructions'])) {
-        return true;
-    }
-
     return match ($code) {
-        'razorpay' => !empty($config['key_id']) || !empty(get_setting('razorpay_key_id')) || defined('RAZORPAY_KEY_ID'),
-        'paypal' => !empty($config['client_id']) || !empty($config['mode']),
-        'phonepe' => !empty($config['merchant_id']) || !empty($config['upi_id']) || !empty($gateway['instructions']),
-        'paytm' => !empty($config['upi_id']) || !empty($config['merchant_id']) || !empty($gateway['instructions']),
-        'binance' => !empty($config['api_key']) || !empty($gateway['instructions']),
-        'cashfree' => !empty($config['app_id']) || !empty($config['client_id']) || !empty($gateway['instructions']),
-        'phonepe_business_qr' => !empty($config['qr_image_url']) || !empty($config['upi_id']) || !empty($config['merchant_id']) || !empty($gateway['instructions']),
+        'razorpay' => (function() use ($config) {
+            $keyId = trim((string)($config['key_id'] ?? get_setting('razorpay_key_id', defined('RAZORPAY_KEY_ID') ? RAZORPAY_KEY_ID : '')));
+            $keySecret = trim((string)($config['key_secret'] ?? get_setting('razorpay_key_secret', defined('RAZORPAY_KEY_SECRET') ? RAZORPAY_KEY_SECRET : '')));
+            if (is_placeholder_credential($keyId) || is_placeholder_credential($keySecret)) {
+                return false;
+            }
+            // Real Razorpay Key IDs must start with rzp_test_ or rzp_live_
+            return str_starts_with($keyId, 'rzp_test_') || str_starts_with($keyId, 'rzp_live_');
+        })(),
+        'paypal' => (function() use ($config) {
+            $clientId = trim((string)($config['client_id'] ?? ''));
+            $clientSecret = trim((string)($config['client_secret'] ?? ''));
+            return !is_placeholder_credential($clientId) && !is_placeholder_credential($clientSecret);
+        })(),
+        'phonepe' => (function() use ($config) {
+            $mId = trim((string)($config['merchant_id'] ?? ''));
+            $saltKey = trim((string)($config['salt_key'] ?? ''));
+            return !is_placeholder_credential($mId) && !is_placeholder_credential($saltKey);
+        })(),
+        'paytm' => (function() use ($config) {
+            $mId = trim((string)($config['merchant_id'] ?? ''));
+            $mKey = trim((string)($config['merchant_key'] ?? ''));
+            $upiId = trim((string)($config['upi_id'] ?? ''));
+            return (!is_placeholder_credential($mId) && !is_placeholder_credential($mKey)) || !is_placeholder_credential($upiId);
+        })(),
+        'binance' => (function() use ($config) {
+            $apiKey = trim((string)($config['api_key'] ?? ''));
+            $secretKey = trim((string)($config['secret_key'] ?? ''));
+            return !is_placeholder_credential($apiKey) && !is_placeholder_credential($secretKey);
+        })(),
+        'cashfree' => (function() use ($config) {
+            $appId = trim((string)($config['app_id'] ?? ($config['client_id'] ?? '')));
+            $secretKey = trim((string)($config['secret_key'] ?? ($config['client_secret'] ?? '')));
+            return !is_placeholder_credential($appId) && !is_placeholder_credential($secretKey);
+        })(),
+        'phonepe_business_qr' => (function() use ($config) {
+            $qrUrl = trim((string)($config['qr_image_url'] ?? ''));
+            $upiId = trim((string)($config['upi_id'] ?? ''));
+            return !is_placeholder_credential($qrUrl) || !is_placeholder_credential($upiId);
+        })(),
         default => true
     };
 }
@@ -768,8 +835,8 @@ function ensure_payment_methods_seeded(\PDO $db): void {
                 'max_amount' => 50000,
                 'fee_percent' => 0,
                 'instructions' => 'Automated instant checkout supporting UPI, Credit/Debit cards, Net Banking & Wallets.',
-                'config_data' => json_encode(['key_id' => get_setting('razorpay_key_id', defined('RAZORPAY_KEY_ID') ? RAZORPAY_KEY_ID : ''), 'key_secret' => get_setting('razorpay_key_secret', defined('RAZORPAY_KEY_SECRET') ? RAZORPAY_KEY_SECRET : ''), 'mode' => 'test']),
-                'status' => 'active',
+                'config_data' => json_encode(['key_id' => '', 'key_secret' => '', 'webhook_secret' => '', 'mode' => 'test']),
+                'status' => 'inactive',
                 'mode' => 'test',
                 'sort_order' => 1
             ],
@@ -997,9 +1064,19 @@ function update_gateway_config(string $code, array $config, array $extra = []): 
         $ok = $stmt->execute($params);
 
         // Sync razorpay keys with settings table for backward compatibility
-        if ($code === 'razorpay' && isset($config['key_id'], $config['key_secret'])) {
-            set_setting('razorpay_key_id', $config['key_id']);
-            set_setting('razorpay_key_secret', $config['key_secret']);
+        if ($code === 'razorpay') {
+            if (isset($config['key_id']) && $config['key_id'] !== '') {
+                set_setting('razorpay_key_id', $config['key_id']);
+            }
+            if (!empty($config['key_secret'])) {
+                set_setting('razorpay_key_secret', $config['key_secret']);
+            }
+            if (!empty($config['key_id']) || !empty($config['key_secret'])) {
+                $pairs = [];
+                if (isset($config['key_id']) && $config['key_id'] !== '') $pairs['razorpay_key_id'] = $config['key_id'];
+                if (!empty($config['key_secret'])) $pairs['razorpay_key_secret'] = $config['key_secret'];
+                update_config_file_settings($pairs);
+            }
         }
 
         return $ok;
@@ -1013,6 +1090,13 @@ function toggle_gateway_status(string $code, bool $enable): array {
     $method = get_payment_method($code);
     if (!$method) {
         return ['success' => false, 'error' => "Gateway '{$code}' not found."];
+    }
+
+    if ($enable && !is_gateway_configured($method)) {
+        return [
+            'success' => false,
+            'error' => "Cannot enable '{$method['name']}': Gateway is not configured with valid merchant credentials yet. Please click 'Configure' and save your credentials first."
+        ];
     }
 
     try {
